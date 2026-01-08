@@ -96,4 +96,8 @@ dependencies {
 
     // MediaPipe Library
     implementation 'com.google.mediapipe:tasks-vision:0.10.29'
+
+    // MyScript iink SDK
+    implementation 'com.myscript:iink:3.0.0'
+    implementation 'com.google.code.gson:gson:2.10.1'
 }

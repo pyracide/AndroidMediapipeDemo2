@@ -24,6 +24,7 @@ import android.util.AttributeSet
 import android.util.Log
 import android.view.View
 import androidx.core.content.ContextCompat
+import com.google.mediapipe.examples.handlandmarker.myscript.MyScriptService
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
@@ -59,6 +60,16 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
     private var isWriting: Boolean = false
     private val drawnPaths = mutableListOf<Path>()
     private var currentPath: Path? = null
+    
+    // MyScript Integration
+    private val currentStrokePoints = mutableListOf<MyScriptService.PointData>()
+    var strokeListener: OnStrokeListener? = null
+    private var lastClearTime = 0L
+
+    interface OnStrokeListener {
+        fun onStroke(points: List<MyScriptService.PointData>)
+        fun onClear()
+    }
 
     init {
         initPaints()
@@ -77,6 +88,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
         drawnPaths.clear()
         currentPath = null
         isWriting = false
+        currentStrokePoints.clear()
         Log.d("OverlayView", "CLEAR")
     }
 
@@ -215,18 +227,26 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
             val x = indexTip.x() * imageWidth * scaleFactor + offsetX
             val y = indexTip.y() * imageHeight * scaleFactor + offsetY
             currentPath?.moveTo(x, y)
+            currentStrokePoints.clear()
         } else if (isWriting && ratio > STOP_THRESHOLD) {
             isWriting = false
             Log.d("OverlayView", "UP")
             // Commit path
             currentPath?.let { drawnPaths.add(it) }
             currentPath = null
+            
+            // Notify listener
+            if (currentStrokePoints.isNotEmpty()) {
+                strokeListener?.onStroke(ArrayList(currentStrokePoints))
+                currentStrokePoints.clear()
+            }
         }
         
-        if (isWriting && currentPath != null) {
+        if (isWriting) {
             val x = indexTip.x() * imageWidth * scaleFactor + offsetX
             val y = indexTip.y() * imageHeight * scaleFactor + offsetY
             currentPath?.lineTo(x, y)
+            currentStrokePoints.add(MyScriptService.PointData(x, y, System.currentTimeMillis()))
         }
         
         // --- The "Clear" Gesture ---
@@ -240,7 +260,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
         val thumbIndexApart = ratio > 0.95
         
         if (fingersOpen && thumbIndexApart) {
-            clearDrawing()
+             val currentTime = System.currentTimeMillis()
+             // Debounce clear to avoid multiple triggers
+             if (currentTime - lastClearTime > 1000) {
+                 clearDrawing()
+                 strokeListener?.onClear()
+                 lastClearTime = currentTime
+             }
         }
     }
     

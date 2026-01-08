@@ -38,8 +38,10 @@ import androidx.fragment.app.activityViewModels
 import androidx.navigation.Navigation
 import com.google.mediapipe.examples.handlandmarker.HandLandmarkerHelper
 import com.google.mediapipe.examples.handlandmarker.MainViewModel
+import com.google.mediapipe.examples.handlandmarker.OverlayView
 import com.google.mediapipe.examples.handlandmarker.R
 import com.google.mediapipe.examples.handlandmarker.databinding.FragmentCameraBinding
+import com.google.mediapipe.examples.handlandmarker.myscript.MyScriptService
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import java.util.Locale
 import java.util.concurrent.ExecutorService
@@ -69,6 +71,8 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     private var isWideAngle = false
     private var isDrawingMode = false
     private var cameraControl: CameraControl? = null
+    
+    private var myScriptService: MyScriptService? = null
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
@@ -109,6 +113,8 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     override fun onDestroyView() {
         _fragmentCameraBinding = null
         super.onDestroyView()
+        
+        myScriptService?.close()
 
         // Shut down our background executor
         backgroundExecutor.shutdown()
@@ -154,6 +160,28 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                 handLandmarkerHelperListener = this
             )
         }
+        
+        // Initialize MyScript
+        myScriptService = MyScriptService(requireContext(), object : MyScriptService.RecognitionListener {
+            override fun onTextRecognized(text: String) {
+                 activity?.runOnUiThread {
+                     fragmentCameraBinding.textRecognitionResult.text = text
+                 }
+            }
+        })
+        myScriptService?.setDisplayMetrics(resources.displayMetrics)
+        
+        fragmentCameraBinding.overlay.strokeListener = object : OverlayView.OnStrokeListener {
+            override fun onStroke(points: List<MyScriptService.PointData>) {
+                myScriptService?.addStroke(points)
+            }
+            override fun onClear() {
+                myScriptService?.clear()
+                 activity?.runOnUiThread {
+                    fragmentCameraBinding.textRecognitionResult.text = ""
+                 }
+            }
+        }
 
         updateWideAngleButtonVisibility()
 
@@ -181,8 +209,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             isDrawingMode = !isDrawingMode
             if (isDrawingMode) {
                 fragmentCameraBinding.btnDrawingMode.text = "Draw: ON"
+                fragmentCameraBinding.textRecognitionResult.visibility = View.VISIBLE
             } else {
                 fragmentCameraBinding.btnDrawingMode.text = "Draw: OFF"
+                fragmentCameraBinding.textRecognitionResult.visibility = View.GONE
             }
             fragmentCameraBinding.overlay.isDrawingMode = isDrawingMode
         }
