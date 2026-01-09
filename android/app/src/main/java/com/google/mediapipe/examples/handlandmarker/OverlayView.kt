@@ -228,6 +228,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
             val y = indexTip.y() * imageHeight * scaleFactor + offsetY
             currentPath?.moveTo(x, y)
             currentStrokePoints.clear()
+            currentStrokePoints.add(MyScriptService.PointData(x, y, System.currentTimeMillis()))
         } else if (isWriting && ratio > STOP_THRESHOLD) {
             isWriting = false
             Log.d("OverlayView", "UP")
