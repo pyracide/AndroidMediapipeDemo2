@@ -69,6 +69,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
     interface OnStrokeListener {
         fun onStroke(points: List<MyScriptService.PointData>)
         fun onClear()
+        fun onDebugCoords(x: Float, y: Float)
     }
 
     init {
@@ -192,8 +193,17 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
         offsetX = (width - imageWidth * scaleFactor) / 2f
         offsetY = (height - imageHeight * scaleFactor) / 2f
 
-        if (isDrawingMode && handLandmarkerResults.landmarks().isNotEmpty()) {
-            processGesture(handLandmarkerResults.landmarks().first())
+        if (handLandmarkerResults.landmarks().isNotEmpty()) {
+            val firstHand = handLandmarkerResults.landmarks().first()
+            if (isDrawingMode) {
+                processGesture(firstHand)
+            } else {
+                // Just track index tip for debug
+                val indexTip = firstHand[8]
+                val x = indexTip.x() * imageWidth * scaleFactor + offsetX
+                val y = indexTip.y() * imageHeight * scaleFactor + offsetY
+                strokeListener?.onDebugCoords(x, y)
+            }
         }
 
         invalidate()
@@ -269,6 +279,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
                  lastClearTime = currentTime
              }
         }
+        
+        // Also emit debug coords when drawing mode is ON
+        val indexX = indexTip.x() * imageWidth * scaleFactor + offsetX
+        val indexY = indexTip.y() * imageHeight * scaleFactor + offsetY
+        strokeListener?.onDebugCoords(indexX, indexY)
     }
     
     private fun distance(p1: NormalizedLandmark, p2: NormalizedLandmark): Float {

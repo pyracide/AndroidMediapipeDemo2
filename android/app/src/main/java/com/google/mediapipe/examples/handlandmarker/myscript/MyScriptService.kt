@@ -17,6 +17,7 @@ import com.myscript.iink.PointerType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -82,7 +83,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
 
                     override fun contentChanged(editor: OffscreenEditor, blockIds: Array<out String>) {
                             if (enableEditorLogging) Log.d("Editor Logging", "contentChanged: ${blockIds.joinToString()}")
-                            performExport()
+                            // NO-OP: We wait for explicit commitAndClear()
                     }
 
                     override fun onError(editor: OffscreenEditor, blockId: String, err: EditorError, message: String) {
@@ -131,7 +132,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                 }
                             }
                             
-                            // 2. If null, create new. If default file locked/exists, use temp file.
+                            // 2. If null, create new. If default file locked, use temp file.
                             if (contentPart == null) {
                                 try {
                                     // Try deleting default file first
@@ -229,22 +230,19 @@ class MyScriptService(private val context: Context, private val listener: Recogn
         }
     }
 
-    fun clear() {
-        scope.launch(Dispatchers.Main) {
-            if (enableEditorLogging) Log.d("Editor Logging", "Clearing editor")
-            offscreenEditor?.clear()
-        }
-    }
-    
-    fun close() {
-        offscreenEditor?.close()
-        contentPart?.close()
-    }
-
-    private fun performExport() {
+    /**
+     * Triggered by "Open Hand" gesture.
+     * 1. Waits for recognition to complete.
+     * 2. Exports result (JIIX) -> notifies listener.
+     * 3. Clears the engine state.
+     */
+    fun commitAndClear() {
         scope.launch(Dispatchers.Default) {
             try {
-                // FIXED: Pass emptyArray() instead of null
+                if (enableEditorLogging) Log.d("Editor Logging", "Commit triggered. Waiting for idle...")
+                offscreenEditor?.waitForIdle()
+                if (enableEditorLogging) Log.d("Editor Logging", "Engine idle. Exporting...")
+
                 val jiixString = offscreenEditor?.export_(emptyArray(), MimeType.JIIX)
                 if (jiixString != null) {
                     if (enableEditorLogging) {
@@ -254,25 +252,37 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                     val textBuilder = StringBuilder()
                     
                     root.elements?.forEach { element ->
-                        if (element.label != null) {
-                            textBuilder.append(element.label).append(" ")
-                        }
-                        element.words?.forEach { word ->
-                            if (word.label != null) {
-                                textBuilder.append(word.label).append(" ")
+                        if (!element.words.isNullOrEmpty()) {
+                            element.words.forEach { word ->
+                                if (word.label != null) {
+                                    textBuilder.append(word.label).append(" ")
+                                }
                             }
+                        } else if (element.label != null) {
+                            textBuilder.append(element.label).append(" ")
                         }
                     }
                     
                     val resultText = textBuilder.toString().trim()
                     withContext(Dispatchers.Main) {
                         listener.onTextRecognized(resultText)
+                        if (enableEditorLogging) Log.d("Editor Logging", "Result emitted. Clearing engine.")
+                        offscreenEditor?.clear()
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        offscreenEditor?.clear()
                     }
                 }
             } catch (e: Exception) {
-                Log.e("Editor Logging", "Export failed", e)
+                Log.e("Editor Logging", "Commit failed", e)
             }
         }
+    }
+    
+    fun close() {
+        offscreenEditor?.close()
+        contentPart?.close()
     }
     
     data class PointData(val x: Float, val y: Float, val timestamp: Long)

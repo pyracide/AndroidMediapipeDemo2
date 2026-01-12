@@ -43,6 +43,19 @@
         android:textSize="24sp"
         android:text="Write in the air..."
         android:visibility="gone"/>
+        
+    <TextView
+        android:id="@+id/text_debug_coords"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="16dp"
+        android:background="#80000000"
+        android:padding="8dp"
+        android:textColor="#00FF00"
+        android:textSize="14sp"
+        android:text="X: 0, Y: 0"
+        android:visibility="visible"/>
 
     <LinearLayout
         android:layout_width="match_parent"

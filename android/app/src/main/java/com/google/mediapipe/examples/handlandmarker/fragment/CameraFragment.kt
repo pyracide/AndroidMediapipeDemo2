@@ -18,6 +18,7 @@ package com.google.mediapipe.examples.handlandmarker.fragment
 import android.annotation.SuppressLint
 import android.content.res.Configuration
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -50,7 +51,7 @@ import java.util.concurrent.TimeUnit
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import android.hardware.camera2.CameraCharacteristics
 
-class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
+class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, TextToSpeech.OnInitListener {
 
     companion object {
         private const val TAG = "Hand Landmarker"
@@ -73,6 +74,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     private var cameraControl: CameraControl? = null
     
     private var myScriptService: MyScriptService? = null
+    private var tts: TextToSpeech? = null
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
@@ -115,6 +117,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
         super.onDestroyView()
         
         myScriptService?.close()
+        
+        if (tts != null) {
+            tts?.stop()
+            tts?.shutdown()
+        }
 
         // Shut down our background executor
         backgroundExecutor.shutdown()
@@ -146,9 +153,20 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             // Set up the camera and its use cases
             setUpCamera()
         }
+        
+        // Initialize TTS
+        tts = TextToSpeech(context, this)
 
         // Create the HandLandmarkerHelper that will handle the inference
         backgroundExecutor.execute {
+            // Check if delegate was set, otherwise default to GPU (1)
+            val currentDelegate = if (viewModel.currentDelegate == HandLandmarkerHelper.DELEGATE_CPU) {
+                 HandLandmarkerHelper.DELEGATE_GPU
+            } else {
+                 viewModel.currentDelegate
+            }
+            viewModel.setDelegate(currentDelegate) // Update VM
+
             handLandmarkerHelper = HandLandmarkerHelper(
                 context = requireContext(),
                 runningMode = RunningMode.LIVE_STREAM,
@@ -156,7 +174,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                 minHandTrackingConfidence = viewModel.currentMinHandTrackingConfidence,
                 minHandPresenceConfidence = viewModel.currentMinHandPresenceConfidence,
                 maxNumHands = viewModel.currentMaxHands,
-                currentDelegate = viewModel.currentDelegate,
+                currentDelegate = currentDelegate,
                 handLandmarkerHelperListener = this
             )
         }
@@ -166,6 +184,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             override fun onTextRecognized(text: String) {
                  activity?.runOnUiThread {
                      fragmentCameraBinding.textRecognitionResult.text = text
+                     // Speak only if drawing mode is active and text is not empty
+                     if (isDrawingMode && text.isNotBlank()) {
+                         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "UtteranceId")
+                     }
                  }
             }
         })
@@ -176,10 +198,13 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                 myScriptService?.addStroke(points)
             }
             override fun onClear() {
-                myScriptService?.clear()
-                 activity?.runOnUiThread {
-                    fragmentCameraBinding.textRecognitionResult.text = ""
-                 }
+                // When user clears drawing, trigger recognition commit
+                myScriptService?.commitAndClear()
+            }
+            override fun onDebugCoords(x: Float, y: Float) {
+                activity?.runOnUiThread {
+                    fragmentCameraBinding.textDebugCoords.text = "X: ${x.toInt()}, Y: ${y.toInt()}"
+                }
             }
         }
 
@@ -210,15 +235,28 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             if (isDrawingMode) {
                 fragmentCameraBinding.btnDrawingMode.text = "Draw: ON"
                 fragmentCameraBinding.textRecognitionResult.visibility = View.VISIBLE
+                fragmentCameraBinding.textDebugCoords.visibility = View.GONE
             } else {
                 fragmentCameraBinding.btnDrawingMode.text = "Draw: OFF"
                 fragmentCameraBinding.textRecognitionResult.visibility = View.GONE
+                fragmentCameraBinding.textDebugCoords.visibility = View.VISIBLE
             }
             fragmentCameraBinding.overlay.isDrawingMode = isDrawingMode
         }
 
         // Attach listeners to UI control widgets
         initBottomSheetControls()
+    }
+    
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            val result = tts?.setLanguage(Locale.US)
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                Log.e("TTS", "Language not supported")
+            }
+        } else {
+            Log.e("TTS", "Initialization failed")
+        }
     }
 
     private fun updateWideAngleButtonVisibility() {
