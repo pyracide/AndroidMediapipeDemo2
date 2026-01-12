@@ -73,6 +73,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private var isDrawingMode = false
     private var cameraControl: CameraControl? = null
     
+    // Blink state to interrupt MediaPipe feed
+    @Volatile
+    private var isBlinking = false
+    
     private var myScriptService: MyScriptService? = null
     private var tts: TextToSpeech? = null
 
@@ -223,9 +227,9 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         fragmentCameraBinding.btnWideAngle.setOnClickListener {
             isWideAngle = !isWideAngle
             if (isWideAngle) {
-                fragmentCameraBinding.btnWideAngle.text = "Normal Angle"
+                fragmentCameraBinding.btnWideAngle.text = "Normal"
             } else {
-                fragmentCameraBinding.btnWideAngle.text = "Wide Angle"
+                fragmentCameraBinding.btnWideAngle.text = "Wide"
             }
             setZoom()
         }
@@ -242,6 +246,17 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 fragmentCameraBinding.textDebugCoords.visibility = View.VISIBLE
             }
             fragmentCameraBinding.overlay.isDrawingMode = isDrawingMode
+        }
+        
+        fragmentCameraBinding.btnBlink.setOnClickListener {
+            // Cut feed to MediaPipe by sending BLACK frames
+            isBlinking = true
+            fragmentCameraBinding.viewFinder.visibility = View.INVISIBLE
+            
+            fragmentCameraBinding.viewFinder.postDelayed({
+                isBlinking = false
+                fragmentCameraBinding.viewFinder.visibility = View.VISIBLE
+            }, 100)
         }
 
         // Attach listeners to UI control widgets
@@ -267,7 +282,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             // Reset wide angle state if we switch to front camera
             if (isWideAngle) {
                 isWideAngle = false
-                fragmentCameraBinding.btnWideAngle.text = "Wide Angle"
+                fragmentCameraBinding.btnWideAngle.text = "Wide"
             }
         }
     }
@@ -452,6 +467,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 // The analyzer can then be assigned to the instance
                 .also {
                     it.setAnalyzer(backgroundExecutor) { image ->
+                        // Pass the isBlinking flag to the helper
                         detectHand(image)
                     }
                 }
@@ -486,9 +502,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     }
 
     private fun detectHand(imageProxy: ImageProxy) {
+        // Updated to pass isBlinking
         handLandmarkerHelper.detectLiveStream(
             imageProxy = imageProxy,
-            isFrontCamera = cameraFacing == CameraSelector.LENS_FACING_FRONT
+            isFrontCamera = cameraFacing == CameraSelector.LENS_FACING_FRONT,
+            isBlackout = isBlinking
         )
     }
 

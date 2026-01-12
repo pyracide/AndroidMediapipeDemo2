@@ -61,28 +61,43 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="16dp"
+        android:padding="8dp"
         android:gravity="center">
 
         <Button
-            android:id="@+id/btn_flip_camera"
-            android:layout_width="wrap_content"
+            android:id="@+id/btn_blink"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Flip Camera"
-            android:layout_marginEnd="8dp"/>
+            android:layout_weight="1"
+            android:text="BLINK"
+            android:textSize="12sp"
+            android:layout_marginEnd="4dp"/>
 
         <Button
             android:id="@+id/btn_wide_angle"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Wide Angle"
-            android:layout_marginEnd="8dp"/>
+            android:layout_weight="1"
+            android:text="Wide"
+            android:textSize="12sp"
+            android:layout_marginEnd="4dp"/>
             
         <Button
             android:id="@+id/btn_drawing_mode"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Draw: OFF"/>
+            android:layout_weight="1"
+            android:text="Draw: OFF"
+            android:textSize="12sp"
+            android:layout_marginEnd="4dp"/>
+            
+        <Button
+            android:id="@+id/btn_flip_camera"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Flip"
+            android:textSize="12sp"/>
     </LinearLayout>
 
     <include

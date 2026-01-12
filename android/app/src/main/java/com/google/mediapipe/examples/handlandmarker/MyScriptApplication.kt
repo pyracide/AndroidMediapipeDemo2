@@ -17,40 +17,28 @@ class MyScriptApplication: Application() {
         Log.i(TAG, "=== MyScriptApplication onCreate STARTED ===")
 
         try {
-            // 1. Force Clean & Re-Extract Configuration
             val confDir = File(filesDir, "conf")
-            if (confDir.exists()) confDir.deleteRecursively()
-            deployAssets("conf", confDir)
-            
-            // 2. Force Clean & Re-Extract Resources (Language Packs)
             val resDir = File(filesDir, "resources")
+
+            // 1. Clean Slate
+            if (confDir.exists()) confDir.deleteRecursively()
             if (resDir.exists()) resDir.deleteRecursively()
+            
+            // 2. Extract Resources First (so we have the target path)
             deployAssets("resources", resDir)
             
-            // 3. DIAGNOSTIC: Verify critical files exist
-            val analyzerFile = File(resDir, "analyzer/ank-raw-content.res")
-            if (analyzerFile.exists()) {
-                Log.d(TAG, "VERIFIED: analyzer/ank-raw-content.res exists")
-            } else {
-                Log.e(TAG, "CRITICAL MISSING: analyzer/ank-raw-content.res")
-            }
+            // 3. Extract Conf
+            deployAssets("conf", confDir)
             
-            // NEW DIAGNOSTIC: Verify document_layout resource causing the IO_FAILURE
-            val docLayoutFile = File(resDir, "document_layout/dl-raw-content.res")
-            if (docLayoutFile.exists()) {
-                Log.d(TAG, "VERIFIED: document_layout/dl-raw-content.res exists")
-            } else {
-                Log.e(TAG, "CRITICAL MISSING: document_layout/dl-raw-content.res NOT FOUND. This causes IO_FAILURE.")
-                // List what IS in resources to help debug
-                Log.d(TAG, "Contents of resources: ${resDir.list()?.joinToString()}")
-                val layoutDir = File(resDir, "document_layout")
-                if (layoutDir.exists()) {
-                    Log.d(TAG, "Contents of document_layout: ${layoutDir.list()?.joinToString()}")
-                } else {
-                    Log.d(TAG, "document_layout directory does not exist")
-                }
-            }
+            // 4. VERIFICATION DIAGNOSTICS
+            verifyFile(File(resDir, "analyzer/ank-raw-content.res"))
+            verifyFile(File(resDir, "document_layout/dl-raw-content.res"))
+            verifyFile(File(confDir, "raw-content.conf"))
+            
+            // CHECK CUSTOM DICTIONARY
+            verifyFile(File(resDir, "custom/10000_noletters.res"))
 
+            // 5. Initialize Engine
             Log.d(TAG, "Attempting to create Engine instance...")
             engine = Engine.create(MyCertificate.getBytes())
             
@@ -62,7 +50,6 @@ class MyScriptApplication: Application() {
             engine?.apply {
                 configuration.let { conf ->
                     conf.setStringArray("configuration-manager.search-path", arrayOf(confDir.absolutePath))
-                    
                     val tempDir = File(cacheDir, "tmp")
                     tempDir.mkdirs()
                     conf.setString("content-package.temp-folder", tempDir.absolutePath)
@@ -72,6 +59,14 @@ class MyScriptApplication: Application() {
             Log.d(TAG, "=== MyScript Engine Initialized Successfully ===")
         } catch (t: Throwable) {
             Log.e(TAG, "FATAL FAILURE in Application.onCreate", t)
+        }
+    }
+    
+    private fun verifyFile(file: File) {
+        if (file.exists()) {
+            Log.d(TAG, "VERIFIED: ${file.name} exists (Size: ${file.length()} bytes)")
+        } else {
+            Log.e(TAG, "CRITICAL MISSING: ${file.absolutePath} NOT FOUND")
         }
     }
     
@@ -96,7 +91,6 @@ class MyScriptApplication: Application() {
                             input.copyTo(output)
                         }
                     }
-                    // Log.d(TAG, "Copied: $filename")
                 } catch (e: IOException) {
                     Log.e(TAG, "Failed to copy asset: $subAsset", e)
                 }

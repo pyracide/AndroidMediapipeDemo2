@@ -23,10 +23,10 @@
   "export": {
     "jiix": {
       "text": {
-        "chars": true,
+        "chars": false,
         "words": true
       },
-      "bounding-box": true,
+      "bounding-box": false,
       "strokes": false,
       "glyphs": false,
       "primitives": false,

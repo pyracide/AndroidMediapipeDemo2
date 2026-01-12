@@ -17,6 +17,7 @@ package com.google.mediapipe.examples.handlandmarker
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -145,7 +146,8 @@ class HandLandmarkerHelper(
     // Convert the ImageProxy to MP Image and feed it to HandlandmakerHelper.
     fun detectLiveStream(
         imageProxy: ImageProxy,
-        isFrontCamera: Boolean
+        isFrontCamera: Boolean,
+        isBlackout: Boolean = false // New flag to force a black frame
     ) {
         if (runningMode != RunningMode.LIVE_STREAM) {
             throw IllegalArgumentException(
@@ -155,37 +157,49 @@ class HandLandmarkerHelper(
         }
         val frameTime = SystemClock.uptimeMillis()
 
-        // Copy out RGB bits from the frame to a bitmap buffer
-        val bitmapBuffer =
-            Bitmap.createBitmap(
+        val mpImage = if (isBlackout) {
+            // Create a black bitmap
+            val blackBitmap = Bitmap.createBitmap(
                 imageProxy.width,
                 imageProxy.height,
                 Bitmap.Config.ARGB_8888
             )
-        imageProxy.use { bitmapBuffer.copyPixelsFromBuffer(imageProxy.planes[0].buffer) }
-        imageProxy.close()
-
-        val matrix = Matrix().apply {
-            // Rotate the frame received from the camera to be in the same direction as it'll be shown
-            postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
-
-            // flip image if user use front camera
-            if (isFrontCamera) {
-                postScale(
-                    -1f,
-                    1f,
-                    imageProxy.width.toFloat(),
-                    imageProxy.height.toFloat()
+            blackBitmap.eraseColor(Color.BLACK)
+            imageProxy.close() // Close the original image immediately
+            BitmapImageBuilder(blackBitmap).build()
+        } else {
+            // Copy out RGB bits from the frame to a bitmap buffer
+            val bitmapBuffer =
+                Bitmap.createBitmap(
+                    imageProxy.width,
+                    imageProxy.height,
+                    Bitmap.Config.ARGB_8888
                 )
-            }
-        }
-        val rotatedBitmap = Bitmap.createBitmap(
-            bitmapBuffer, 0, 0, bitmapBuffer.width, bitmapBuffer.height,
-            matrix, true
-        )
+            imageProxy.use { bitmapBuffer.copyPixelsFromBuffer(imageProxy.planes[0].buffer) }
+            imageProxy.close()
 
-        // Convert the input Bitmap object to an MPImage object to run inference
-        val mpImage = BitmapImageBuilder(rotatedBitmap).build()
+            val matrix = Matrix().apply {
+                // Rotate the frame received from the camera to be in the same direction as it'll be shown
+                postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
+
+                // flip image if user use front camera
+                if (isFrontCamera) {
+                    postScale(
+                        -1f,
+                        1f,
+                        imageProxy.width.toFloat(),
+                        imageProxy.height.toFloat()
+                    )
+                }
+            }
+            val rotatedBitmap = Bitmap.createBitmap(
+                bitmapBuffer, 0, 0, bitmapBuffer.width, bitmapBuffer.height,
+                matrix, true
+            )
+
+            // Convert the input Bitmap object to an MPImage object to run inference
+            BitmapImageBuilder(rotatedBitmap).build()
+        }
 
         detectAsync(mpImage, frameTime)
     }
