@@ -253,8 +253,17 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             isBlinking = true
             fragmentCameraBinding.viewFinder.visibility = View.INVISIBLE
             
+            // Clear landmarker state on background thread
+            backgroundExecutor.execute {
+                handLandmarkerHelper.clearHandLandmarker()
+            }
+            
             fragmentCameraBinding.viewFinder.postDelayed({
-                isBlinking = false
+                // Re-enable feed and setup landmarker again
+                backgroundExecutor.execute {
+                    handLandmarkerHelper.setupHandLandmarker()
+                    isBlinking = false
+                }
                 fragmentCameraBinding.viewFinder.visibility = View.VISIBLE
             }, 100)
         }
@@ -467,8 +476,12 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 // The analyzer can then be assigned to the instance
                 .also {
                     it.setAnalyzer(backgroundExecutor) { image ->
-                        // Pass the isBlinking flag to the helper
-                        detectHand(image)
+                        if (!isBlinking) {
+                            detectHand(image)
+                        } else {
+                            // Close image if we are blinking to avoid memory leak
+                            image.close()
+                        }
                     }
                 }
 
@@ -534,6 +547,17 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                     resultBundle.inputImageWidth,
                     RunningMode.LIVE_STREAM
                 )
+                
+                // Show confidence score
+                if (resultBundle.results.isNotEmpty()) {
+                    val result = resultBundle.results.first()
+                    if (result.handedness().isNotEmpty()) {
+                        val score = result.handedness().first().first().score()
+                        fragmentCameraBinding.textConfidenceDebug.text = String.format("Conf: %.2f", score)
+                    }
+                } else {
+                    fragmentCameraBinding.textConfidenceDebug.text = "Conf: --"
+                }
 
                 // Force a redraw
                 fragmentCameraBinding.overlay.invalidate()
