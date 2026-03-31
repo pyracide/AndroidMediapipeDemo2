@@ -143,6 +143,19 @@ class HandLandmarkerHelper(
         }
     }
 
+    // New method to support raw bitmaps (e.g. from Smart Glasses stream)
+    fun detectLiveStreamBitmap(bitmap: Bitmap) {
+        if (runningMode != RunningMode.LIVE_STREAM) {
+            throw IllegalArgumentException(
+                "Attempting to call detectLiveStreamBitmap" +
+                        " while not using RunningMode.LIVE_STREAM"
+            )
+        }
+        val frameTime = SystemClock.uptimeMillis()
+        val mpImage = BitmapImageBuilder(bitmap).build()
+        detectAsync(mpImage, frameTime)
+    }
+
     // Convert the ImageProxy to MP Image and feed it to HandlandmakerHelper.
     fun detectLiveStream(
         imageProxy: ImageProxy,

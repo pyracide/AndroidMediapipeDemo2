@@ -16,7 +16,9 @@
 package com.google.mediapipe.examples.handlandmarker.fragment
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.util.Log
@@ -24,6 +26,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
+import android.widget.EditText
 import android.widget.Toast
 import androidx.camera.core.CameraControl
 import androidx.camera.core.Preview
@@ -37,11 +40,15 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.navigation.Navigation
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.mediapipe.examples.handlandmarker.HandLandmarkerHelper
 import com.google.mediapipe.examples.handlandmarker.MainViewModel
 import com.google.mediapipe.examples.handlandmarker.OverlayView
 import com.google.mediapipe.examples.handlandmarker.R
+import com.google.mediapipe.examples.handlandmarker.SmartGlassesStreamService
 import com.google.mediapipe.examples.handlandmarker.databinding.FragmentCameraBinding
+import com.google.mediapipe.examples.handlandmarker.databinding.InfoBottomSheetBinding
+import com.google.mediapipe.examples.handlandmarker.myscript.Item
 import com.google.mediapipe.examples.handlandmarker.myscript.MyScriptService
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import java.util.Locale
@@ -77,8 +84,15 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     @Volatile
     private var isBlinking = false
     
+    // Smart Glasses Mode
+    private var isSmartGlassesMode = false
+    private var smartGlassesService: SmartGlassesStreamService? = null
+    private var lastSocketUrl = "ws://192.168.1.91:8080/stream"
+    
     private var myScriptService: MyScriptService? = null
     private var tts: TextToSpeech? = null
+    private var settingsDialog: BottomSheetDialog? = null
+    private var bottomSheetBinding: InfoBottomSheetBinding? = null
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
@@ -114,13 +128,18 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             // Close the HandLandmarkerHelper and release resources
             backgroundExecutor.execute { handLandmarkerHelper.clearHandLandmarker() }
         }
+        
+        // Stop Smart Glasses if running
+        smartGlassesService?.disconnect()
     }
 
     override fun onDestroyView() {
         _fragmentCameraBinding = null
+        bottomSheetBinding = null
         super.onDestroyView()
         
         myScriptService?.close()
+        smartGlassesService?.disconnect()
         
         if (tts != null) {
             tts?.stop()
@@ -183,6 +202,31 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             )
         }
         
+        // Initialize Smart Glasses Service
+        smartGlassesService = SmartGlassesStreamService(object : SmartGlassesStreamService.StreamListener {
+            override fun onFrameReceived(bitmap: Bitmap) {
+                // 1. Update UI
+                activity?.runOnUiThread {
+                    fragmentCameraBinding.smartGlassesView.setImageBitmap(bitmap)
+                }
+                
+                // 2. Run Inference (Background)
+                if (this@CameraFragment::backgroundExecutor.isInitialized && !backgroundExecutor.isShutdown) {
+                    backgroundExecutor.execute {
+                        if (!isBlinking) {
+                            handLandmarkerHelper.detectLiveStreamBitmap(bitmap)
+                        }
+                    }
+                }
+            }
+
+            override fun onConnectionStatusChanged(isConnected: Boolean, message: String?) {
+                activity?.runOnUiThread {
+                    Toast.makeText(requireContext(), message ?: "Connection Status: $isConnected", Toast.LENGTH_SHORT).show()
+                }
+            }
+        })
+        
         // Initialize MyScript
         myScriptService = MyScriptService(requireContext(), object : MyScriptService.RecognitionListener {
             override fun onTextRecognized(text: String) {
@@ -193,6 +237,12 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                          tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "UtteranceId")
                      }
                  }
+            }
+            
+            override fun onJiixReceived(items: List<Item>) {
+                activity?.runOnUiThread {
+                    fragmentCameraBinding.inkPreview.setStrokes(items)
+                }
             }
         })
         myScriptService?.setDisplayMetrics(resources.displayMetrics)
@@ -252,24 +302,93 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             // Cut feed to MediaPipe by sending BLACK frames
             isBlinking = true
             fragmentCameraBinding.viewFinder.visibility = View.INVISIBLE
-            
-            // Clear landmarker state on background thread
-            backgroundExecutor.execute {
-                handLandmarkerHelper.clearHandLandmarker()
-            }
+            fragmentCameraBinding.smartGlassesView.visibility = View.INVISIBLE // Also blink SG view if active
             
             fragmentCameraBinding.viewFinder.postDelayed({
-                // Re-enable feed and setup landmarker again
-                backgroundExecutor.execute {
-                    handLandmarkerHelper.setupHandLandmarker()
-                    isBlinking = false
+                isBlinking = false
+                if (isSmartGlassesMode) {
+                    fragmentCameraBinding.smartGlassesView.visibility = View.VISIBLE
+                } else {
+                    fragmentCameraBinding.viewFinder.visibility = View.VISIBLE
                 }
-                fragmentCameraBinding.viewFinder.visibility = View.VISIBLE
             }, 100)
         }
-
-        // Attach listeners to UI control widgets
-        initBottomSheetControls()
+        
+        fragmentCameraBinding.btnSettings.setOnClickListener {
+            showSettingsDialog()
+        }
+        
+        fragmentCameraBinding.btnSmartGlasses.setOnClickListener {
+            toggleSmartGlassesMode()
+        }
+    }
+    
+    private fun toggleSmartGlassesMode() {
+        if (!isSmartGlassesMode) {
+            // Enable Smart Glasses Mode
+            val input = EditText(requireContext())
+            input.setText(lastSocketUrl)
+            
+            AlertDialog.Builder(requireContext())
+                .setTitle("Connect to Smart Glasses")
+                .setView(input)
+                .setPositiveButton("Connect") { _, _ ->
+                    val url = input.text.toString()
+                    if (url.isNotBlank()) {
+                        lastSocketUrl = url
+                        enableSmartGlasses(url)
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            // Disable Smart Glasses Mode
+            disableSmartGlasses()
+        }
+    }
+    
+    private fun enableSmartGlasses(url: String) {
+        isSmartGlassesMode = true
+        // 1. Unbind local camera
+        cameraProvider?.unbindAll()
+        fragmentCameraBinding.viewFinder.visibility = View.INVISIBLE
+        
+        // 2. Show SG View
+        fragmentCameraBinding.smartGlassesView.visibility = View.VISIBLE
+        
+        // 3. Connect
+        smartGlassesService?.connect(url)
+        
+        // Update Button visual state (optional)
+        fragmentCameraBinding.btnSmartGlasses.setColorFilter(ContextCompat.getColor(requireContext(), R.color.mp_color_primary))
+    }
+    
+    private fun disableSmartGlasses() {
+        isSmartGlassesMode = false
+        // 1. Disconnect
+        smartGlassesService?.disconnect()
+        
+        // 2. Hide SG View
+        fragmentCameraBinding.smartGlassesView.setImageBitmap(null)
+        fragmentCameraBinding.smartGlassesView.visibility = View.GONE
+        
+        // 3. Rebind local camera
+        fragmentCameraBinding.viewFinder.visibility = View.VISIBLE
+        bindCameraUseCases()
+        
+        // Update Button visual state (optional)
+        fragmentCameraBinding.btnSmartGlasses.clearColorFilter()
+    }
+    
+    private fun showSettingsDialog() {
+        if (settingsDialog == null) {
+            settingsDialog = BottomSheetDialog(requireContext())
+            bottomSheetBinding = InfoBottomSheetBinding.inflate(layoutInflater)
+            settingsDialog?.setContentView(bottomSheetBinding!!.root)
+            initBottomSheetControls()
+        }
+        updateControlsUi()
+        settingsDialog?.show()
     }
     
     override fun onInit(status: Int) {
@@ -297,24 +416,26 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     }
 
     private fun initBottomSheetControls() {
+        if (bottomSheetBinding == null) return
+
         // init bottom sheet settings
-        fragmentCameraBinding.bottomSheetLayout.maxHandsValue.text =
+        bottomSheetBinding!!.maxHandsValue.text =
             viewModel.currentMaxHands.toString()
-        fragmentCameraBinding.bottomSheetLayout.detectionThresholdValue.text =
+        bottomSheetBinding!!.detectionThresholdValue.text =
             String.format(
                 Locale.US, "%.2f", viewModel.currentMinHandDetectionConfidence
             )
-        fragmentCameraBinding.bottomSheetLayout.trackingThresholdValue.text =
+        bottomSheetBinding!!.trackingThresholdValue.text =
             String.format(
                 Locale.US, "%.2f", viewModel.currentMinHandTrackingConfidence
             )
-        fragmentCameraBinding.bottomSheetLayout.presenceThresholdValue.text =
+        bottomSheetBinding!!.presenceThresholdValue.text =
             String.format(
                 Locale.US, "%.2f", viewModel.currentMinHandPresenceConfidence
             )
 
         // When clicked, lower hand detection score threshold floor
-        fragmentCameraBinding.bottomSheetLayout.detectionThresholdMinus.setOnClickListener {
+        bottomSheetBinding!!.detectionThresholdMinus.setOnClickListener {
             if (handLandmarkerHelper.minHandDetectionConfidence >= 0.2) {
                 handLandmarkerHelper.minHandDetectionConfidence -= 0.1f
                 updateControlsUi()
@@ -322,7 +443,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         }
 
         // When clicked, raise hand detection score threshold floor
-        fragmentCameraBinding.bottomSheetLayout.detectionThresholdPlus.setOnClickListener {
+        bottomSheetBinding!!.detectionThresholdPlus.setOnClickListener {
             if (handLandmarkerHelper.minHandDetectionConfidence <= 0.8) {
                 handLandmarkerHelper.minHandDetectionConfidence += 0.1f
                 updateControlsUi()
@@ -330,7 +451,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         }
 
         // When clicked, lower hand tracking score threshold floor
-        fragmentCameraBinding.bottomSheetLayout.trackingThresholdMinus.setOnClickListener {
+        bottomSheetBinding!!.trackingThresholdMinus.setOnClickListener {
             if (handLandmarkerHelper.minHandTrackingConfidence >= 0.2) {
                 handLandmarkerHelper.minHandTrackingConfidence -= 0.1f
                 updateControlsUi()
@@ -338,7 +459,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         }
 
         // When clicked, raise hand tracking score threshold floor
-        fragmentCameraBinding.bottomSheetLayout.trackingThresholdPlus.setOnClickListener {
+        bottomSheetBinding!!.trackingThresholdPlus.setOnClickListener {
             if (handLandmarkerHelper.minHandTrackingConfidence <= 0.8) {
                 handLandmarkerHelper.minHandTrackingConfidence += 0.1f
                 updateControlsUi()
@@ -346,7 +467,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         }
 
         // When clicked, lower hand presence score threshold floor
-        fragmentCameraBinding.bottomSheetLayout.presenceThresholdMinus.setOnClickListener {
+        bottomSheetBinding!!.presenceThresholdMinus.setOnClickListener {
             if (handLandmarkerHelper.minHandPresenceConfidence >= 0.2) {
                 handLandmarkerHelper.minHandPresenceConfidence -= 0.1f
                 updateControlsUi()
@@ -354,7 +475,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         }
 
         // When clicked, raise hand presence score threshold floor
-        fragmentCameraBinding.bottomSheetLayout.presenceThresholdPlus.setOnClickListener {
+        bottomSheetBinding!!.presenceThresholdPlus.setOnClickListener {
             if (handLandmarkerHelper.minHandPresenceConfidence <= 0.8) {
                 handLandmarkerHelper.minHandPresenceConfidence += 0.1f
                 updateControlsUi()
@@ -363,7 +484,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
 
         // When clicked, reduce the number of hands that can be detected at a
         // time
-        fragmentCameraBinding.bottomSheetLayout.maxHandsMinus.setOnClickListener {
+        bottomSheetBinding!!.maxHandsMinus.setOnClickListener {
             if (handLandmarkerHelper.maxNumHands > 1) {
                 handLandmarkerHelper.maxNumHands--
                 updateControlsUi()
@@ -372,7 +493,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
 
         // When clicked, increase the number of hands that can be detected
         // at a time
-        fragmentCameraBinding.bottomSheetLayout.maxHandsPlus.setOnClickListener {
+        bottomSheetBinding!!.maxHandsPlus.setOnClickListener {
             if (handLandmarkerHelper.maxNumHands < 2) {
                 handLandmarkerHelper.maxNumHands++
                 updateControlsUi()
@@ -381,10 +502,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
 
         // When clicked, change the underlying hardware used for inference.
         // Current options are CPU and GPU
-        fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.setSelection(
+        bottomSheetBinding!!.spinnerDelegate.setSelection(
             viewModel.currentDelegate, false
         )
-        fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.onItemSelectedListener =
+        bottomSheetBinding!!.spinnerDelegate.onItemSelectedListener =
             object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(
                     p0: AdapterView<*>?, p1: View?, p2: Int, p3: Long
@@ -406,26 +527,32 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     // Update the values displayed in the bottom sheet. Reset Handlandmarker
     // helper.
     private fun updateControlsUi() {
-        fragmentCameraBinding.bottomSheetLayout.maxHandsValue.text =
+        if (bottomSheetBinding == null) return
+
+        bottomSheetBinding!!.maxHandsValue.text =
             handLandmarkerHelper.maxNumHands.toString()
-        fragmentCameraBinding.bottomSheetLayout.detectionThresholdValue.text =
+        bottomSheetBinding!!.detectionThresholdValue.text =
             String.format(
                 Locale.US,
                 "%.2f",
                 handLandmarkerHelper.minHandDetectionConfidence
             )
-        fragmentCameraBinding.bottomSheetLayout.trackingThresholdValue.text =
+        bottomSheetBinding!!.trackingThresholdValue.text =
             String.format(
                 Locale.US,
                 "%.2f",
                 handLandmarkerHelper.minHandTrackingConfidence
             )
-        fragmentCameraBinding.bottomSheetLayout.presenceThresholdValue.text =
+        bottomSheetBinding!!.presenceThresholdValue.text =
             String.format(
                 Locale.US,
                 "%.2f",
                 handLandmarkerHelper.minHandPresenceConfidence
             )
+            
+        if(this::handLandmarkerHelper.isInitialized) {
+            bottomSheetBinding!!.inferenceTimeVal.text = "0 ms" // Reset or update from helper if possible
+        }
 
         // Needs to be cleared instead of reinitialized because the GPU
         // delegate needs to be initialized on the thread using it when applicable
@@ -537,8 +664,12 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     ) {
         activity?.runOnUiThread {
             if (_fragmentCameraBinding != null) {
-                fragmentCameraBinding.bottomSheetLayout.inferenceTimeVal.text =
-                    String.format("%d ms", resultBundle.inferenceTime)
+                // Remove direct update of bottom sheet here, as it's now in a dialog
+                // If the dialog is open, update it
+                if (settingsDialog?.isShowing == true && bottomSheetBinding != null) {
+                     bottomSheetBinding!!.inferenceTimeVal.text =
+                        String.format("%d ms", resultBundle.inferenceTime)
+                }
 
                 // Pass necessary information to OverlayView for drawing on the canvas
                 fragmentCameraBinding.overlay.setResults(
@@ -569,9 +700,12 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         activity?.runOnUiThread {
             Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
             if (errorCode == HandLandmarkerHelper.GPU_ERROR) {
-                fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.setSelection(
-                    HandLandmarkerHelper.DELEGATE_CPU, false
-                )
+                // If dialog is open, update spinner
+                if (settingsDialog?.isShowing == true && bottomSheetBinding != null) {
+                    bottomSheetBinding!!.spinnerDelegate.setSelection(
+                        HandLandmarkerHelper.DELEGATE_CPU, false
+                    )
+                }
             }
         }
     }

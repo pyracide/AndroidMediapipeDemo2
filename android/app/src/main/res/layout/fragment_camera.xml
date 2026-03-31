@@ -14,7 +14,7 @@
     ~ See the License for the specific language governing permissions and
     ~ limitations under the License.
 -->
-<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/camera_container"
     android:layout_width="match_parent"
@@ -23,59 +23,102 @@
     <androidx.camera.view.PreviewView
         android:id="@+id/view_finder"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/ink_preview_container"
         app:scaleType="fitCenter" />
+        
+    <!-- Smart Glasses Stream View (Initially Hidden) -->
+    <ImageView
+        android:id="@+id/smart_glasses_view"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        android:scaleType="fitCenter"
+        android:background="#000000"
+        app:layout_constraintTop_toTopOf="@id/view_finder"
+        app:layout_constraintBottom_toBottomOf="@id/view_finder"/>
 
     <com.google.mediapipe.examples.handlandmarker.OverlayView
         android:id="@+id/overlay"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="@id/view_finder"
+        app:layout_constraintBottom_toBottomOf="@id/view_finder"/>
         
+    <!-- Ink Visualization Area -->
+    <androidx.cardview.widget.CardView
+        android:id="@+id/ink_preview_container"
+        android:layout_width="match_parent"
+        android:layout_height="150dp"
+        android:backgroundTint="#000000"
+        app:layout_constraintBottom_toBottomOf="parent">
+        
+        <com.google.mediapipe.examples.handlandmarker.InkPreviewView
+            android:id="@+id/ink_preview"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+            
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="JIIX Stroke View"
+            android:textSize="10sp"
+            android:textColor="#888888"
+            android:layout_gravity="top|start"
+            android:layout_margin="4dp"/>
+    </androidx.cardview.widget.CardView>
+
     <TextView
         android:id="@+id/text_recognition_result"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|center_horizontal"
         android:layout_marginTop="50dp"
         android:background="#80000000"
         android:padding="8dp"
         android:textColor="#FFFFFF"
         android:textSize="24sp"
         android:text="Write in the air..."
-        android:visibility="gone"/>
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"/>
         
     <TextView
         android:id="@+id/text_debug_coords"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|end"
         android:layout_margin="16dp"
         android:background="#80000000"
         android:padding="8dp"
         android:textColor="#00FF00"
         android:textSize="14sp"
         android:text="X: 0, Y: 0"
-        android:visibility="visible"/>
+        android:visibility="visible"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"/>
         
     <TextView
         android:id="@+id/text_confidence_debug"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|center_horizontal"
         android:layout_marginTop="100dp"
         android:background="#80000000"
         android:padding="4dp"
         android:textColor="#FFFF00"
         android:textSize="14sp"
         android:text="Conf: --"
-        android:visibility="visible"/>
+        android:visibility="visible"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"/>
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:padding="8dp"
-        android:gravity="center">
+        app:layout_constraintTop_toTopOf="parent">
 
         <Button
             android:id="@+id/btn_blink"
@@ -113,7 +156,27 @@
             android:textSize="12sp"/>
     </LinearLayout>
 
-    <include
-        android:id="@+id/bottom_sheet_layout"
-        layout="@layout/info_bottom_sheet" />
-</androidx.coordinatorlayout.widget.CoordinatorLayout>
+    <ImageButton
+        android:id="@+id/btn_settings"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_margin="16dp"
+        android:src="@drawable/ic_baseline_settings_24"
+        android:background="@drawable/rounded_button_bg"
+        android:contentDescription="Settings"
+        app:layout_constraintBottom_toTopOf="@id/ink_preview_container"
+        app:layout_constraintEnd_toEndOf="parent"/>
+        
+    <ImageButton
+        android:id="@+id/btn_smart_glasses"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_margin="16dp"
+        android:src="@drawable/ic_baseline_settings_24" 
+        android:tint="#00AAFF"
+        android:background="@drawable/rounded_button_bg"
+        android:contentDescription="Smart Glasses Mode"
+        app:layout_constraintBottom_toTopOf="@id/ink_preview_container"
+        app:layout_constraintStart_toStartOf="parent"/>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

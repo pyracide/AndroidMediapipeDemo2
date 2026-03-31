@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.DisplayMetrics
 import android.util.Log
 import com.google.gson.Gson
+import com.google.gson.annotations.SerializedName
 import com.google.mediapipe.examples.handlandmarker.MyScriptApplication
 import com.myscript.iink.ContentPart
 import com.myscript.iink.EditorError
@@ -23,10 +24,52 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
+// --- Data Models (Moved here to ensure compilation) ---
+data class RecognitionRoot(
+    val type: String?,
+    val elements: List<Element>?,
+    val version: String?
+)
+
+data class Element(
+    val id: String,
+    val type: String,
+    @SerializedName("bounding-box")
+    val boundingBox: BoundingBox?,
+    val words: List<Word>?,
+    val items: List<Item>?, 
+    val label: String?
+)
+
+data class Word(
+    val label: String?,
+    @SerializedName("bounding-box")
+    val boundingBox: BoundingBox?,
+    val items: List<Item>? 
+)
+
+data class Item(
+    val type: String,
+    val id: String?,
+    @SerializedName("X")
+    val X: List<Float>?,
+    @SerializedName("Y")
+    val Y: List<Float>?
+)
+
+data class BoundingBox(
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float
+)
+// ----------------------------------------------------
+
 class MyScriptService(private val context: Context, private val listener: RecognitionListener) {
 
     interface RecognitionListener {
         fun onTextRecognized(text: String)
+        fun onJiixReceived(items: List<Item>)
     }
 
     private var engine: Engine? = null
@@ -230,42 +273,58 @@ class MyScriptService(private val context: Context, private val listener: Recogn
         }
     }
 
-    /**
-     * Triggered by "Open Hand" gesture.
-     * 1. Waits for recognition to complete.
-     * 2. Exports result (JIIX) -> notifies listener.
-     * 3. Clears the engine state.
-     */
     fun commitAndClear() {
         scope.launch(Dispatchers.Default) {
             try {
+                // Safety check
+                if (offscreenEditor?.part == null) {
+                    Log.e("Editor Logging", "Commit ignored: Editor has no part.")
+                    return@launch
+                }
+
                 if (enableEditorLogging) Log.d("Editor Logging", "Commit triggered. Waiting for idle...")
                 offscreenEditor?.waitForIdle()
                 if (enableEditorLogging) Log.d("Editor Logging", "Engine idle. Exporting...")
 
+                // 1. Export JIIX
                 val jiixString = offscreenEditor?.export_(emptyArray(), MimeType.JIIX)
+                
                 if (jiixString != null) {
                     if (enableEditorLogging) {
-                        Log.d("Editor Logging", "JIIX Export: $jiixString")
+                        Log.d("Editor Logging", "JIIX Export: ${jiixString.take(100)}...")
                     }
                     val root = Gson().fromJson(jiixString, RecognitionRoot::class.java)
                     val textBuilder = StringBuilder()
+                    val allItems = mutableListOf<Item>()
                     
                     root.elements?.forEach { element ->
+                        // Collect Text
                         if (!element.words.isNullOrEmpty()) {
                             element.words.forEach { word ->
                                 if (word.label != null) {
                                     textBuilder.append(word.label).append(" ")
                                 }
+                                // Collect Strokes inside Words
+                                word.items?.let { allItems.addAll(it) }
                             }
                         } else if (element.label != null) {
                             textBuilder.append(element.label).append(" ")
                         }
+                        
+                        // Collect Strokes inside Elements (Raw Content structure)
+                        element.items?.let { allItems.addAll(it) }
                     }
                     
                     val resultText = textBuilder.toString().trim()
+                    
                     withContext(Dispatchers.Main) {
                         listener.onTextRecognized(resultText)
+                        
+                        // Send strokes to visualizer
+                        if (allItems.isNotEmpty()) {
+                            listener.onJiixReceived(allItems)
+                        }
+                        
                         if (enableEditorLogging) Log.d("Editor Logging", "Result emitted. Clearing engine.")
                         offscreenEditor?.clear()
                     }
@@ -277,6 +336,13 @@ class MyScriptService(private val context: Context, private val listener: Recogn
             } catch (e: Exception) {
                 Log.e("Editor Logging", "Commit failed", e)
             }
+        }
+    }
+    
+    fun clear() {
+        scope.launch(Dispatchers.Main) {
+            if (enableEditorLogging) Log.d("Editor Logging", "Clearing editor")
+            offscreenEditor?.clear()
         }
     }
     

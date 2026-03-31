@@ -26,6 +26,7 @@
 
     <!-- Declare permissions -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:name=".MyScriptApplication"
@@ -36,6 +37,7 @@
         android:supportsRtl="true"
         android:taskAffinity=""
         android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="true"
         tools:ignore="AllowBackup">
 
         <activity
