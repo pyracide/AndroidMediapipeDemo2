@@ -110,16 +110,21 @@ def run_interactive_test():
                 else:
                     score, eval_type = tester.get_unigram_log_prob(candidate)
                     
-                results.append({"word": candidate, "score": score, "type": eval_type})
+                # Min-Max Normalization Mapping [-14.0, -3.0] -> [0.0, 1.0]
+                MIN_LOG = -14.0
+                MAX_LOG = -3.0
+                normalized = (score - MIN_LOG) / (MAX_LOG - MIN_LOG)
+                confidence = max(0.0, min(1.0, normalized))
+                
+                results.append({"word": candidate, "score": score, "conf": confidence, "type": eval_type})
                 
             # Sort highest score first
             results.sort(key=lambda x: x["score"], reverse=True)
             
-            print("\n----- PREDICTION RANKING (~Log Prob Score) -----")
-            # The score is a mathematically calculated log-probability. Closer to 0 (or positive) is better. Highly negative is bad.
+            print("\n----- PREDICTION RANKING -----")
             for i, res in enumerate(results):
-                print(f" {i+1}. '{res['word']}'  | Score: {res['score']:.4f} | (Evaluated via {res['type']} Backoff)")
-            print("------------------------------------------------\n")
+                print(f" {i+1}. '{res['word']}'  | Confidence: {res['conf']:.2f} (Raw: {res['score']:.4f}) | {res['type']} Backoff")
+            print("------------------------------\n")
             
         except KeyboardInterrupt:
             break
