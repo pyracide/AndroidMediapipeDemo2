@@ -93,6 +93,9 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private var tts: TextToSpeech? = null
     private var settingsDialog: BottomSheetDialog? = null
     private var bottomSheetBinding: InfoBottomSheetBinding? = null
+    
+    private var ngWeight = 1.0f
+    private var isNgDebugEnabled = false
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
@@ -229,9 +232,16 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         
         // Initialize MyScript
         myScriptService = MyScriptService(requireContext(), object : MyScriptService.RecognitionListener {
-            override fun onTextRecognized(text: String) {
+            override fun onTextRecognized(text: String, debugText: String) {
                  activity?.runOnUiThread {
                      fragmentCameraBinding.textRecognitionResult.text = text
+                     if (isNgDebugEnabled && debugText.isNotEmpty()) {
+                         fragmentCameraBinding.textNgramDebug.text = debugText
+                         fragmentCameraBinding.textNgramDebug.visibility = View.VISIBLE
+                     } else {
+                         fragmentCameraBinding.textNgramDebug.visibility = View.GONE
+                     }
+                     
                      // Speak only if drawing mode is active and text is not empty
                      if (isDrawingMode && text.isNotBlank()) {
                          tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "UtteranceId")
@@ -499,6 +509,31 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 updateControlsUi()
             }
         }
+        
+        // N-Gram Weight controls
+        bottomSheetBinding!!.ngramWeightMinus.setOnClickListener {
+            if (ngWeight > 0.1f) {
+                ngWeight -= 0.1f
+                myScriptService?.setNgWeight(ngWeight)
+                updateControlsUi()
+            }
+        }
+        
+        bottomSheetBinding!!.ngramWeightPlus.setOnClickListener {
+            if (ngWeight < 1.95f) { // Float precision
+                ngWeight += 0.1f
+                myScriptService?.setNgWeight(ngWeight)
+                updateControlsUi()
+            }
+        }
+        
+        bottomSheetBinding!!.ngramDebugSwitch.setOnCheckedChangeListener { _, isChecked ->
+            isNgDebugEnabled = isChecked
+            myScriptService?.setNgDebugMode(isChecked)
+            if (!isChecked) {
+                fragmentCameraBinding.textNgramDebug.visibility = View.GONE
+            }
+        }
 
         // When clicked, change the underlying hardware used for inference.
         // Current options are CPU and GPU
@@ -549,6 +584,9 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 "%.2f",
                 handLandmarkerHelper.minHandPresenceConfidence
             )
+            
+        bottomSheetBinding!!.ngramWeightValue.text = String.format(Locale.US, "%.1f", ngWeight)
+        bottomSheetBinding!!.ngramDebugSwitch.isChecked = isNgDebugEnabled
             
         if(this::handLandmarkerHelper.isInitialized) {
             bottomSheetBinding!!.inferenceTimeVal.text = "0 ms" // Reset or update from helper if possible

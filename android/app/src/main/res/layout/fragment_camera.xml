@@ -85,6 +85,21 @@
         app:layout_constraintEnd_toEndOf="parent"/>
         
     <TextView
+        android:id="@+id/text_ngram_debug"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="100dp"
+        android:background="#80000000"
+        android:padding="8dp"
+        android:textColor="#00FFFF"
+        android:textSize="12sp"
+        android:text="N-Gram Debug Info"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"/>
+        
+    <TextView
         android:id="@+id/text_debug_coords"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

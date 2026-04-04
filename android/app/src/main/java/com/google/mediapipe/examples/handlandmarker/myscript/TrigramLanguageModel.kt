@@ -9,12 +9,17 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.ln
+
+data class DecodeResult(val text: String, val debugInfo: String)
 
 class TrigramLanguageModel(private val context: Context) {
 
     private var db: SQLiteDatabase? = null
-    var lmWeight = 0.5f
+    var ngWeight = 1.0f
+    var isDebugMode = false
 
     // History state tracking for sequential word inputs (one word at a time)
     private var historyW2: String = ""
@@ -62,14 +67,16 @@ class TrigramLanguageModel(private val context: Context) {
         historyW1 = ""
     }
 
-    fun decodeOptimalSentence(wordSequence: List<List<String>>): String {
-        if (wordSequence.isEmpty()) return ""
+    fun decodeOptimalSentence(wordSequence: List<List<String>>): DecodeResult {
+        if (wordSequence.isEmpty()) return DecodeResult("", "")
+        
+        val debugData = StringBuilder()
         
         // If DB is still copying in the background, don't crash, just gracefully 
         // fall back to MyScript's raw rank-0 suggestions!
         if (!isDbReady) {
             Log.w(TAG, "DB not ready! Falling back to raw MyScript output.")
-            return wordSequence.joinToString(" ") { it.firstOrNull() ?: "" }
+            return DecodeResult(wordSequence.joinToString(" ") { it.firstOrNull() ?: "" }, "DB Loading...")
         }
 
         val trellis = ArrayList<MutableMap<Pair<String, String>, ViterbiNode>>()
@@ -78,12 +85,14 @@ class TrigramLanguageModel(private val context: Context) {
         val step0 = mutableMapOf<Pair<String, String>, ViterbiNode>()
         val firstWordCandidates = wordSequence[0].filter { it.isNotBlank() }
         
+        if (isDebugMode) debugData.append("--- Word 1 ---\n")
+        
         for ((rank, candidate) in firstWordCandidates.withIndex()) {
-            val opticalScore = getOpticalLogProb(rank)
+            val jiixScore = getJiixScore(rank)
             val currentLower = candidate.lowercase()
             
             // Calculate starting probability by blending history
-            val lmProb = if (historyW1.isNotBlank() && historyW2.isNotBlank()) {
+            val lmProbRaw = if (historyW1.isNotBlank() && historyW2.isNotBlank()) {
                 getTrigramLogProb(historyW2, historyW1, currentLower)
             } else if (historyW1.isNotBlank()) {
                 getBigramLogProb(historyW1, currentLower)
@@ -91,8 +100,14 @@ class TrigramLanguageModel(private val context: Context) {
                 getUnigramLogProb(currentLower)
             }
             
+            val ngScore = normalizeScore(lmProbRaw)
+            val score = jiixScore + (ngWeight * ngScore)
+            
+            if (isDebugMode) {
+                debugData.append(String.format("%s (R%d): JIIX: %.2f | NG: %.2f | Tot: %.2f\n", candidate, rank, jiixScore, ngScore, score))
+            }
+            
             val stateKey = Pair(historyW1, currentLower)
-            val score = (1f - lmWeight) * opticalScore + lmWeight * lmProb
             step0[stateKey] = ViterbiNode(candidate, score, null)
         }
         trellis.add(step0)
@@ -102,8 +117,10 @@ class TrigramLanguageModel(private val context: Context) {
             val step1 = mutableMapOf<Pair<String, String>, ViterbiNode>()
             val secondWordCandidates = wordSequence[1].filter { it.isNotBlank() }
             
+            if (isDebugMode) debugData.append("\n--- Word 2 ---\n")
+            
             for ((rank, currentCand) in secondWordCandidates.withIndex()) {
-                val opticalScore = getOpticalLogProb(rank)
+                val jiixScore = getJiixScore(rank)
                 val currentLower = currentCand.lowercase()
 
                 for ((prevCandKey, prevNode) in step0) {
@@ -115,13 +132,27 @@ class TrigramLanguageModel(private val context: Context) {
                         getBigramLogProb(candidate0Lower, currentLower)
                     }
                     
-                    val totalScore = prevNode.score + (1f - lmWeight) * opticalScore + lmWeight * transitionLogProb
+                    val ngScore = normalizeScore(transitionLogProb)
+                    val totalScore = prevNode.score + jiixScore + (ngWeight * ngScore)
                     val stateKey = Pair(candidate0Lower, currentLower)
                     
                     val existing = step1[stateKey]
                     if (existing == null || totalScore > existing.score) {
                         step1[stateKey] = ViterbiNode(currentCand, totalScore, prevNode)
+                        if (isDebugMode && (existing == null || totalScore > existing.score)) {
+                            // Only append debug for the single best path into this candidate to prevent spam
+                            // For simplicity, just appending everything might be noisy, but useful
+                        }
                     }
+                }
+                
+                if (isDebugMode) {
+                    val bestEntry = step1.entries.filter { it.value.word == currentCand }.maxByOrNull { it.value.score }
+                    val finalScoreForCand = bestEntry?.value?.score ?: 0f
+                    // Recalculate component for debug (rough)
+                    val rawPrevScore = bestEntry?.value?.backpointer?.score ?: 0f
+                    val thisStepAdd = finalScoreForCand - rawPrevScore
+                    debugData.append(String.format("%s (R%d): JIIX: %.2f | Additive: %.2f | Tot: %.2f\n", currentCand, rank, jiixScore, thisStepAdd, finalScoreForCand))
                 }
             }
             trellis.add(step1)
@@ -131,9 +162,11 @@ class TrigramLanguageModel(private val context: Context) {
         for (i in 2 until wordSequence.size) {
             val step = mutableMapOf<Pair<String, String>, ViterbiNode>()
             val candidates = wordSequence[i].filter { it.isNotBlank() }
+            
+            if (isDebugMode) debugData.append("\n--- Word ${i+1} ---\n")
 
             for ((rank, currentCand) in candidates.withIndex()) {
-                val opticalScore = getOpticalLogProb(rank)
+                val jiixScore = getJiixScore(rank)
                 val currentLower = currentCand.lowercase()
 
                 for ((prevStateKey, prevNode) in trellis[i - 1]) {
@@ -141,7 +174,8 @@ class TrigramLanguageModel(private val context: Context) {
                     val wMinus1 = prevStateKey.second
                     
                     val transitionLogProb = getTrigramLogProb(wMinus2, wMinus1, currentLower)
-                    val totalScore = prevNode.score + (1f - lmWeight) * opticalScore + lmWeight * transitionLogProb
+                    val ngScore = normalizeScore(transitionLogProb)
+                    val totalScore = prevNode.score + jiixScore + (ngWeight * ngScore)
                     
                     val newStateKey = Pair(wMinus1, currentLower)
                     
@@ -149,6 +183,14 @@ class TrigramLanguageModel(private val context: Context) {
                     if (existing == null || totalScore > existing.score) {
                         step[newStateKey] = ViterbiNode(currentCand, totalScore, prevNode)
                     }
+                }
+                
+                if (isDebugMode) {
+                    val bestEntry = step.entries.filter { it.value.word == currentCand }.maxByOrNull { it.value.score }
+                    val finalScoreForCand = bestEntry?.value?.score ?: 0f
+                    val rawPrevScore = bestEntry?.value?.backpointer?.score ?: 0f
+                    val thisStepAdd = finalScoreForCand - rawPrevScore
+                    debugData.append(String.format("%s (R%d): JIIX: %.2f | Additive: %.2f | Tot: %.2f\n", currentCand, rank, jiixScore, thisStepAdd, finalScoreForCand))
                 }
             }
             trellis.add(step)
@@ -172,11 +214,11 @@ class TrigramLanguageModel(private val context: Context) {
             historyW1 = lowerWord
         }
 
-        return finalSequence.joinToString(" ")
+        return DecodeResult(finalSequence.joinToString(" "), debugData.toString())
     }
 
-    private fun getOpticalLogProb(rank: Int): Float {
-        return -ln((rank + 1).toFloat())
+    private fun getJiixScore(rank: Int): Float {
+        return max(0.2f, 1.0f - (rank * 0.2f))
     }
 
     private fun getWordId(word: String): Int? {
@@ -250,8 +292,15 @@ class TrigramLanguageModel(private val context: Context) {
 
     companion object {
         private const val TAG = "TrigramLM"
-        private const val UNKNOWN_WORD_LOG_PROB = -10.0f
+        private const val UNKNOWN_WORD_LOG_PROB = -14.0f
         private const val BACKOFF_PENALTY = -2.0f
         private const val TOTAL_CORPUS_LOG_PROB = 17.5f // ~ln(40,000,000) for dynamic probability scaling
+        
+        fun normalizeScore(logProb: Float): Float {
+            val minLog = -14.0f
+            val maxLog = -3.0f
+            val normalized = (logProb - minLog) / (maxLog - minLog)
+            return max(0.0f, min(1.0f, normalized))
+        }
     }
 }

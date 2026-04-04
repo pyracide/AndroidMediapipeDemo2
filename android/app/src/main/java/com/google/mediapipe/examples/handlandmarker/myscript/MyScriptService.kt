@@ -69,7 +69,7 @@ data class BoundingBox(
 class MyScriptService(private val context: Context, private val listener: RecognitionListener) {
 
     interface RecognitionListener {
-        fun onTextRecognized(text: String)
+        fun onTextRecognized(text: String, debugText: String = "")
         fun onJiixReceived(items: List<Item>)
     }
 
@@ -98,6 +98,14 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     fun setDisplayMetrics(metrics: DisplayMetrics) {
         converter = DisplayMetricsConverter(metrics)
         Log.d("Editor Logging", "DisplayMetrics set. Converter initialized: ${converter != null}")
+    }
+    
+    fun setNgWeight(weight: Float) {
+        languageModel.ngWeight = weight
+    }
+    
+    fun setNgDebugMode(enabled: Boolean) {
+        languageModel.isDebugMode = enabled
     }
 
     private fun initializeEditor() {
@@ -330,18 +338,20 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                     }
                     
                     // Decode using Trigram Language Model
+                    var finalDebugText = ""
                     val resultText = if (textSequence.isNotEmpty()) {
-                        val lmResult = languageModel.decodeOptimalSentence(textSequence)
+                        val decodeResult = languageModel.decodeOptimalSentence(textSequence)
+                        finalDebugText = decodeResult.debugInfo
                         if (enableEditorLogging) {
-                            Log.d("Editor Logging", "LM Result: $lmResult (vs raw: ${fallbackText.toString().trim()})")
+                            Log.d("Editor Logging", "LM Result: ${decodeResult.text} (vs raw: ${fallbackText.toString().trim()})")
                         }
-                        lmResult
+                        decodeResult.text
                     } else {
                         fallbackText.toString().trim()
                     }
                     
                     withContext(Dispatchers.Main) {
-                        listener.onTextRecognized(resultText)
+                        listener.onTextRecognized(resultText, finalDebugText)
                         
                         // Send strokes to visualizer
                         if (allItems.isNotEmpty()) {
