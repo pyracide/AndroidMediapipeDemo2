@@ -43,6 +43,7 @@ data class Element(
 
 data class Word(
     val label: String?,
+    val candidates: List<String>?,
     @SerializedName("bounding-box")
     val boundingBox: BoundingBox?,
     val items: List<Item>? 
@@ -77,6 +78,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     private var contentPart: ContentPart? = null
     private var converter: DisplayMetricsConverter? = null
     private val scope = CoroutineScope(Dispatchers.Main + Job())
+    private val languageModel by lazy { TrigramLanguageModel(context) }
     
     private val enableEditorLogging = true
     private var isReady = false
@@ -156,6 +158,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                         if (partConf != null && offscreenEditor?.configuration != null) {
                             try {
                                 offscreenEditor?.configuration?.inject(partConf)
+                                offscreenEditor?.configuration?.setBoolean("export.jiix.text.words", true)
                                 if (enableEditorLogging) Log.d("Editor Logging", "Configuration injected")
                             } catch (e: Exception) {
                                 Log.e("Editor Logging", "Failed to inject configuration", e)
@@ -294,28 +297,48 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                         Log.d("Editor Logging", "JIIX Export: ${jiixString.take(100)}...")
                     }
                     val root = Gson().fromJson(jiixString, RecognitionRoot::class.java)
-                    val textBuilder = StringBuilder()
                     val allItems = mutableListOf<Item>()
+                    
+                    val textSequence = mutableListOf<List<String>>()
+                    val fallbackText = java.lang.StringBuilder()
                     
                     root.elements?.forEach { element ->
                         // Collect Text
                         if (!element.words.isNullOrEmpty()) {
                             element.words.forEach { word ->
+                                val cands = mutableListOf<String>()
+                                word.label?.let { cands.add(it) } // Add the default label first
+                                word.candidates?.forEach { if (it != word.label) cands.add(it) }
+                                
+                                if (cands.isNotEmpty()) {
+                                    textSequence.add(cands)
+                                }
+                                
                                 if (word.label != null) {
-                                    textBuilder.append(word.label).append(" ")
+                                    fallbackText.append(word.label).append(" ")
                                 }
                                 // Collect Strokes inside Words
                                 word.items?.let { allItems.addAll(it) }
                             }
                         } else if (element.label != null) {
-                            textBuilder.append(element.label).append(" ")
+                            textSequence.add(listOf(element.label))
+                            fallbackText.append(element.label).append(" ")
                         }
                         
                         // Collect Strokes inside Elements (Raw Content structure)
                         element.items?.let { allItems.addAll(it) }
                     }
                     
-                    val resultText = textBuilder.toString().trim()
+                    // Decode using Trigram Language Model
+                    val resultText = if (textSequence.isNotEmpty()) {
+                        val lmResult = languageModel.decodeOptimalSentence(textSequence)
+                        if (enableEditorLogging) {
+                            Log.d("Editor Logging", "LM Result: $lmResult (vs raw: ${fallbackText.toString().trim()})")
+                        }
+                        lmResult
+                    } else {
+                        fallbackText.toString().trim()
+                    }
                     
                     withContext(Dispatchers.Main) {
                         listener.onTextRecognized(resultText)
