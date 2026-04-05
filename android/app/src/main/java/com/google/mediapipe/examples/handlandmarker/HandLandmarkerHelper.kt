@@ -144,7 +144,7 @@ class HandLandmarkerHelper(
     }
 
     // New method to support raw bitmaps (e.g. from Smart Glasses stream)
-    fun detectLiveStreamBitmap(bitmap: Bitmap) {
+    fun detectLiveStreamBitmap(bitmap: Bitmap, isFlipped: Boolean = false, isMirrored: Boolean = false) {
         if (runningMode != RunningMode.LIVE_STREAM) {
             throw IllegalArgumentException(
                 "Attempting to call detectLiveStreamBitmap" +
@@ -152,7 +152,19 @@ class HandLandmarkerHelper(
             )
         }
         val frameTime = SystemClock.uptimeMillis()
-        val mpImage = BitmapImageBuilder(bitmap).build()
+        
+        val finalBitmap = if (isFlipped || isMirrored) {
+            val matrix = Matrix().apply { 
+                val scaleX = if (isMirrored) -1f else 1f
+                val scaleY = if (isFlipped) -1f else 1f
+                postScale(scaleX, scaleY, bitmap.width / 2f, bitmap.height / 2f) 
+            }
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        } else {
+            bitmap
+        }
+        
+        val mpImage = BitmapImageBuilder(finalBitmap).build()
         detectAsync(mpImage, frameTime)
     }
 

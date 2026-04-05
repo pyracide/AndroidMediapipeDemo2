@@ -108,7 +108,10 @@ class TrigramLanguageModel(private val context: Context) {
             }
             
             val stateKey = Pair(historyW1, currentLower)
-            step0[stateKey] = ViterbiNode(candidate, score, null)
+            val existing = step0[stateKey]
+            if (existing == null || score > existing.score) {
+                step0[stateKey] = ViterbiNode(candidate, score, null)
+            }
         }
         trellis.add(step0)
 

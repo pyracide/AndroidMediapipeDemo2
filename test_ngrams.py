@@ -75,6 +75,50 @@ class NGramTester:
         score, eval_type = self.get_bigram_log_prob(w2, w3)
         return (BACKOFF_PENALTY + score, eval_type)
 
+    def predict_next_words(self, w1, w2, limit=3):
+        results = []
+        id1 = self.get_word_id(w1) if w1 else None
+        id2 = self.get_word_id(w2) if w2 else None
+        
+        def get_word(word_id):
+            self.cursor.execute("SELECT word FROM dictionary WHERE id = ?", (word_id,))
+            row = self.cursor.fetchone()
+            return row[0] if row else None
+
+        # 1. Try Trigrams
+        if id1 is not None and id2 is not None:
+            self.cursor.execute("SELECT w3, count FROM trigrams WHERE w1 = ? AND w2 = ? ORDER BY count DESC LIMIT ?", (id1, id2, limit))
+            rows = self.cursor.fetchall()
+            if rows:
+                for r in rows:
+                    word = get_word(r[0])
+                    if word:
+                        score = math.log(r[1]) - TOTAL_CORPUS_LOG_PROB
+                        results.append({"word": word, "score": score, "type": "Trigram Prediction"})
+                return results
+
+        # 2. Backoff to Bigrams
+        if id2 is not None:
+            self.cursor.execute("SELECT w2, count FROM bigrams WHERE w1 = ? ORDER BY count DESC LIMIT ?", (id2, limit))
+            rows = self.cursor.fetchall()
+            if rows:
+                for r in rows:
+                    word = get_word(r[0])
+                    if word:
+                        score = math.log(r[1]) - TOTAL_CORPUS_LOG_PROB
+                        results.append({"word": word, "score": score, "type": "Bigram Prediction"})
+                return results
+
+        # 3. Backoff to Unigrams
+        self.cursor.execute("SELECT w1, count FROM unigrams ORDER BY count DESC LIMIT ?", (limit,))
+        rows = self.cursor.fetchall()
+        for r in rows:
+            word = get_word(r[0])
+            if word:
+                score = math.log(r[1]) - TOTAL_CORPUS_LOG_PROB
+                results.append({"word": word, "score": score, "type": "Unigram Prediction"})
+        return results
+
 def run_interactive_test():
     db_path = os.path.join('android', 'app', 'src', 'main', 'assets', 'ngrams.db')
     print(f"Connecting to database: {db_path}...")
@@ -122,9 +166,19 @@ def run_interactive_test():
             results.sort(key=lambda x: x["score"], reverse=True)
             
             print("\n----- PREDICTION RANKING -----")
-            for i, res in enumerate(results):
-                print(f" {i+1}. '{res['word']}'  | Confidence: {res['conf']:.2f} (Raw: {res['score']:.4f}) | {res['type']} Backoff")
-            print("------------------------------\n")
+            if not results:
+                print(" No candidates provided to rank.")
+            else:
+                for i, res in enumerate(results):
+                    print(f" {i+1}. '{res['word']}'  | Confidence: {res['conf']:.2f} (Raw: {res['score']:.4f}) | {res['type']} Backoff")
+            print("------------------------------")
+            
+            # Unconstrained Forward Prediction
+            predictions = tester.predict_next_words(w_minus_2, w_minus_1, limit=3)
+            print("\n>> TOP UNCONSTRAINED PREDICTIONS:")
+            for i, p in enumerate(predictions):
+                print(f"   {i+1}. '{p['word']}' (Score: {p['score']:.4f}) [{p['type']}]")
+            print("--------------------------------------------------\n")
             
         except KeyboardInterrupt:
             break

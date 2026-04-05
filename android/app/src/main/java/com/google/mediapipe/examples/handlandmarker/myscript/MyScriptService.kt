@@ -379,6 +379,11 @@ class MyScriptService(private val context: Context, private val listener: Recogn
         }
     }
     
+    fun resetLanguageModelHistory() {
+        languageModel.resetHistory()
+        if (enableEditorLogging) Log.d("Editor Logging", "N-Gram language model history reset due to hand tracker loss.")
+    }
+    
     fun close() {
         offscreenEditor?.close()
         contentPart?.close()

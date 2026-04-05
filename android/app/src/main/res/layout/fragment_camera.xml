@@ -163,6 +163,16 @@
             android:layout_marginEnd="4dp"/>
             
         <Button
+            android:id="@+id/btn_mirror_camera"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Mirror"
+            android:visibility="gone"
+            android:textSize="12sp"
+            android:layout_marginEnd="4dp"/>
+            
+        <Button
             android:id="@+id/btn_flip_camera"
             android:layout_width="0dp"
             android:layout_height="wrap_content"

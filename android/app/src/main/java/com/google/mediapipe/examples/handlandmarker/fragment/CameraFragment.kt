@@ -86,8 +86,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     
     // Smart Glasses Mode
     private var isSmartGlassesMode = false
+    private var isSmartGlassesFlipped = false
+    private var isSmartGlassesMirrored = false
     private var smartGlassesService: SmartGlassesStreamService? = null
-    private var lastSocketUrl = "ws://192.168.1.91:8080/stream"
+    private var lastSocketUrl = "ws://192.168.1.218:81"
     
     private var myScriptService: MyScriptService? = null
     private var tts: TextToSpeech? = null
@@ -96,6 +98,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     
     private var ngWeight = 1.0f
     private var isNgDebugEnabled = false
+    private var wasHandPresent = false
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
@@ -217,7 +220,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 if (this@CameraFragment::backgroundExecutor.isInitialized && !backgroundExecutor.isShutdown) {
                     backgroundExecutor.execute {
                         if (!isBlinking) {
-                            handLandmarkerHelper.detectLiveStreamBitmap(bitmap)
+                            handLandmarkerHelper.detectLiveStreamBitmap(bitmap, isSmartGlassesFlipped, isSmartGlassesMirrored)
                         }
                     }
                 }
@@ -274,7 +277,20 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
 
         updateWideAngleButtonVisibility()
 
+        fragmentCameraBinding.btnMirrorCamera.setOnClickListener {
+            if (isSmartGlassesMode) {
+                isSmartGlassesMirrored = !isSmartGlassesMirrored
+                fragmentCameraBinding.smartGlassesView.scaleX = if (isSmartGlassesMirrored) -1f else 1f
+            }
+        }
+
         fragmentCameraBinding.btnFlipCamera.setOnClickListener {
+            if (isSmartGlassesMode) {
+                isSmartGlassesFlipped = !isSmartGlassesFlipped
+                fragmentCameraBinding.smartGlassesView.scaleY = if (isSmartGlassesFlipped) -1f else 1f
+                return@setOnClickListener
+            }
+            
             cameraFacing = if (cameraFacing == CameraSelector.LENS_FACING_FRONT) {
                 CameraSelector.LENS_FACING_BACK
             } else {
@@ -340,7 +356,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             input.setText(lastSocketUrl)
             
             AlertDialog.Builder(requireContext())
-                .setTitle("Connect to Smart Glasses")
+                .setTitle("Connect to Websocket")
                 .setView(input)
                 .setPositiveButton("Connect") { _, _ ->
                     val url = input.text.toString()
@@ -365,6 +381,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         
         // 2. Show SG View
         fragmentCameraBinding.smartGlassesView.visibility = View.VISIBLE
+        fragmentCameraBinding.btnMirrorCamera.visibility = View.VISIBLE
         
         // 3. Connect
         smartGlassesService?.connect(url)
@@ -381,6 +398,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         // 2. Hide SG View
         fragmentCameraBinding.smartGlassesView.setImageBitmap(null)
         fragmentCameraBinding.smartGlassesView.visibility = View.GONE
+        fragmentCameraBinding.btnMirrorCamera.visibility = View.GONE
         
         // 3. Rebind local camera
         fragmentCameraBinding.viewFinder.visibility = View.VISIBLE
@@ -730,6 +748,15 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
 
                 // Force a redraw
                 fragmentCameraBinding.overlay.invalidate()
+                
+                // Failsafe: if the hand is totally lost by ML, reset language history context
+                val resultForTracking = resultBundle.results.firstOrNull()
+                val isHandPresent = resultForTracking?.landmarks()?.isNotEmpty() == true
+                
+                if (!isHandPresent && wasHandPresent) {
+                    myScriptService?.resetLanguageModelHistory()
+                }
+                wasHandPresent = isHandPresent
             }
         }
     }
