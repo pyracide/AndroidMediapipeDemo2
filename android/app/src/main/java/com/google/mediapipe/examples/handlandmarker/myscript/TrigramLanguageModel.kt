@@ -22,8 +22,8 @@ class TrigramLanguageModel(private val context: Context) {
     var isDebugMode = false
 
     // History state tracking for sequential word inputs (one word at a time)
-    private var historyW2: String = ""
-    private var historyW1: String = ""
+    var historyW2: String = ""
+    var historyW1: String = ""
     
     // DB Extraction Flag
     @Volatile

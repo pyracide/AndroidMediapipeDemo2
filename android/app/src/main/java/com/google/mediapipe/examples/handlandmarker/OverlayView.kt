@@ -227,7 +227,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
         
         // --- Pinch Detection (The "Pen") ---
         val START_THRESHOLD = 0.20
-        val STOP_THRESHOLD = 0.24
+        val STOP_THRESHOLD = 0.30
         
         if (!isWriting && ratio < START_THRESHOLD) {
             isWriting = true

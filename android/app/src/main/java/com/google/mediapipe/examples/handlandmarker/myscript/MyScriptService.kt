@@ -337,17 +337,19 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                         element.items?.let { allItems.addAll(it) }
                     }
                     
-                    // Decode using Trigram Language Model
+                    // Evaluate Best String Match 
                     var finalDebugText = ""
                     val resultText = if (textSequence.isNotEmpty()) {
+                        // Run the classical Tri-Gram Logic
                         val decodeResult = languageModel.decodeOptimalSentence(textSequence)
                         finalDebugText = decodeResult.debugInfo
-                        if (enableEditorLogging) {
-                            Log.d("Editor Logging", "LM Result: ${decodeResult.text} (vs raw: ${fallbackText.toString().trim()})")
-                        }
                         decodeResult.text
                     } else {
                         fallbackText.toString().trim()
+                    }
+                    
+                    if (enableEditorLogging) {
+                        Log.d("Editor Logging", "Final Output: $resultText (vs raw: ${fallbackText.toString().trim()})")
                     }
                     
                     withContext(Dispatchers.Main) {
