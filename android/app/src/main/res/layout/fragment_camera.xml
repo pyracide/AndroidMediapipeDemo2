@@ -205,5 +205,34 @@
         android:contentDescription="Smart Glasses Mode"
         app:layout_constraintBottom_toTopOf="@id/ink_preview_container"
         app:layout_constraintStart_toStartOf="parent"/>
+        
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:background="#80000000"
+        android:padding="8dp"
+        app:layout_constraintBottom_toTopOf="@id/ink_preview_container"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginBottom="8dp">
+
+        <TextView
+            android:id="@+id/text_camera_fps"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:text="Cam FPS: --" />
+
+        <TextView
+            android:id="@+id/text_mediapipe_fps"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#00FF00"
+            android:textSize="12sp"
+            android:text="MP FPS: --" />
+    </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

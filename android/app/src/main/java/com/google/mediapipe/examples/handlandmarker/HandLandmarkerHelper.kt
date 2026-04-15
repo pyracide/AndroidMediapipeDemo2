@@ -48,6 +48,9 @@ class HandLandmarkerHelper(
     // For this example this needs to be a var so it can be reset on changes.
     // If the Hand Landmarker will not change, a lazy val would be preferable.
     private var handLandmarker: HandLandmarker? = null
+    
+    // Internal tracker to ensure MediaPipe timestamps are strictly monotonically increasing
+    private var lastTimestampMs = -1L
 
     init {
         setupHandLandmarker()
@@ -232,7 +235,15 @@ class HandLandmarkerHelper(
     // Run hand hand landmark using MediaPipe Hand Landmarker API
     @VisibleForTesting
     fun detectAsync(mpImage: MPImage, frameTime: Long) {
-        handLandmarker?.detectAsync(mpImage, frameTime)
+        // Enforce monotonically increasing timestamp
+        val monotonicTimestamp = if (frameTime <= lastTimestampMs) lastTimestampMs + 1 else frameTime
+        lastTimestampMs = monotonicTimestamp
+        
+        try {
+            handLandmarker?.detectAsync(mpImage, monotonicTimestamp)
+        } catch (e: Exception) {
+            Log.e(TAG, "MediaPipe detectAsync failed", e)
+        }
         // As we're using running mode LIVE_STREAM, the landmark result will
         // be returned in returnLivestreamResult function
     }

@@ -98,7 +98,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     
     private var ngWeight = 1.0f
     private var isNgDebugEnabled = false
+    private var isNgramEnabled = true
     private var wasHandPresent = false
+    
+    private val camFpsQueue = java.util.ArrayDeque<Long>()
+    private val mpFpsQueue = java.util.ArrayDeque<Long>()
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
@@ -211,6 +215,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         // Initialize Smart Glasses Service
         smartGlassesService = SmartGlassesStreamService(object : SmartGlassesStreamService.StreamListener {
             override fun onFrameReceived(bitmap: Bitmap) {
+                updateFpsCounter(camFpsQueue, fragmentCameraBinding.textCameraFps, "Cam FPS")
                 // 1. Update UI
                 activity?.runOnUiThread {
                     fragmentCameraBinding.smartGlassesView.setImageBitmap(bitmap)
@@ -552,6 +557,14 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 fragmentCameraBinding.textNgramDebug.visibility = View.GONE
             }
         }
+        
+        bottomSheetBinding!!.ngramEnableSwitch.setOnCheckedChangeListener { _, isChecked ->
+            isNgramEnabled = isChecked
+            myScriptService?.isNgramEnabled = isChecked
+            if (!isChecked) {
+                fragmentCameraBinding.textNgramDebug.visibility = View.GONE
+            }
+        }
 
         // When clicked, change the underlying hardware used for inference.
         // Current options are CPU and GPU
@@ -605,6 +618,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             
         bottomSheetBinding!!.ngramWeightValue.text = String.format(Locale.US, "%.1f", ngWeight)
         bottomSheetBinding!!.ngramDebugSwitch.isChecked = isNgDebugEnabled
+        bottomSheetBinding!!.ngramEnableSwitch.isChecked = isNgramEnabled
             
         if(this::handLandmarkerHelper.isInitialized) {
             bottomSheetBinding!!.inferenceTimeVal.text = "0 ms" // Reset or update from helper if possible
@@ -659,6 +673,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 // The analyzer can then be assigned to the instance
                 .also {
                     it.setAnalyzer(backgroundExecutor) { image ->
+                        updateFpsCounter(camFpsQueue, fragmentCameraBinding.textCameraFps, "Cam FPS")
                         if (!isBlinking) {
                             detectHand(image)
                         } else {
@@ -718,6 +733,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     override fun onResults(
         resultBundle: HandLandmarkerHelper.ResultBundle
     ) {
+        updateFpsCounter(mpFpsQueue, fragmentCameraBinding.textMediapipeFps, "MP FPS")
         activity?.runOnUiThread {
             if (_fragmentCameraBinding != null) {
                 // Remove direct update of bottom sheet here, as it's now in a dialog
@@ -772,6 +788,21 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                     )
                 }
             }
+        }
+    }
+
+    private fun updateFpsCounter(queue: java.util.ArrayDeque<Long>, textView: android.widget.TextView, prefix: String) {
+        val now = System.currentTimeMillis()
+        queue.addLast(now)
+        while (queue.isNotEmpty() && now - queue.first() > 5000L) {
+            queue.removeFirst()
+        }
+        val count = queue.size
+        val duration = if (count > 1) (now - queue.first()) / 1000f else 0f
+        val fps = if (duration > 0) count / duration else 0f
+        
+        activity?.runOnUiThread {
+            textView.text = String.format(java.util.Locale.US, "%s: %.1f", prefix, fps)
         }
     }
 }

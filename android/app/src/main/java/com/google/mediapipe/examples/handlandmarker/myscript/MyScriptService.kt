@@ -107,6 +107,8 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     fun setNgDebugMode(enabled: Boolean) {
         languageModel.isDebugMode = enabled
     }
+    
+    var isNgramEnabled = true
 
     private fun initializeEditor() {
         if (isInitializing.getAndSet(true)) {
@@ -339,12 +341,13 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                     
                     // Evaluate Best String Match 
                     var finalDebugText = ""
-                    val resultText = if (textSequence.isNotEmpty()) {
+                    val resultText = if (textSequence.isNotEmpty() && isNgramEnabled) {
                         // Run the classical Tri-Gram Logic
                         val decodeResult = languageModel.decodeOptimalSentence(textSequence)
                         finalDebugText = decodeResult.debugInfo
                         decodeResult.text
                     } else {
+                        // Fallback completely to raw top-choice text
                         fallbackText.toString().trim()
                     }
                     
