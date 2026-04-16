@@ -109,6 +109,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     }
     
     var isNgramEnabled = true
+    var oneWordOnly = true
 
     private fun initializeEditor() {
         if (isInitializing.getAndSet(true)) {
@@ -341,14 +342,32 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                     
                     // Evaluate Best String Match 
                     var finalDebugText = ""
-                    val resultText = if (textSequence.isNotEmpty() && isNgramEnabled) {
+                    
+                    val sequenceToEvaluate = if (oneWordOnly && textSequence.isNotEmpty()) {
+                        listOf(textSequence.last())
+                    } else {
+                        textSequence
+                    }
+                    
+                    val finalFallback = if (oneWordOnly) {
+                        fallbackText.toString().trim().split(Regex("\\s+")).lastOrNull() ?: ""
+                    } else {
+                        fallbackText.toString().trim()
+                    }
+
+                    val resultText = if (sequenceToEvaluate.isNotEmpty() && isNgramEnabled) {
                         // Run the classical Tri-Gram Logic
-                        val decodeResult = languageModel.decodeOptimalSentence(textSequence)
+                        val decodeResult = languageModel.decodeOptimalSentence(sequenceToEvaluate)
                         finalDebugText = decodeResult.debugInfo
                         decodeResult.text
                     } else {
                         // Fallback completely to raw top-choice text
-                        fallbackText.toString().trim()
+                        finalFallback
+                    }
+                    
+                    if (languageModel.isDebugMode) {
+                        val fullJiixExport = "RAW JIIX (Pre-Trim):\n" + textSequence.mapIndexed { i, cands -> "W${i+1}: " + cands.take(3).joinToString(", ") }.joinToString("\n")
+                        finalDebugText = fullJiixExport + "\n\n" + finalDebugText
                     }
                     
                     if (enableEditorLogging) {
