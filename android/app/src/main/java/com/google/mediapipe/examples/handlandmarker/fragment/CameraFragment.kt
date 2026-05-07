@@ -105,6 +105,12 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     
     private val camFpsQueue = java.util.ArrayDeque<Long>()
     private val mpFpsQueue = java.util.ArrayDeque<Long>()
+    
+    private val isProcessingFrame = java.util.concurrent.atomic.AtomicBoolean(false)
+    
+    private var sharedTrackingBitmap: Bitmap? = null
+    private var pixelCopyThread: android.os.HandlerThread? = null
+    private var pixelCopyHandler: android.os.Handler? = null
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
@@ -153,6 +159,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         myScriptService?.close()
         smartGlassesService?.disconnect()
         
+        pixelCopyThread?.quitSafely()
+        pixelCopyThread = null
+        pixelCopyHandler = null
+        
         if (tts != null) {
             tts?.stop()
             tts?.shutdown()
@@ -182,6 +192,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
 
         // Initialize our background executor
         backgroundExecutor = Executors.newSingleThreadExecutor()
+        
+        // Initialize PixelCopy thread
+        pixelCopyThread = android.os.HandlerThread("PixelCopyThread").apply { start() }
+        pixelCopyHandler = android.os.Handler(pixelCopyThread!!.looper)
 
         // Wait for the views to be properly laid out
         fragmentCameraBinding.viewFinder.post {
@@ -409,19 +423,38 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             
             fragmentCameraBinding.smartGlassesH264View.surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
                 override fun onSurfaceTextureAvailable(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                    sharedTrackingBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                     val surface = android.view.Surface(surfaceTexture)
                     h264Decoder = H264Decoder(surface).apply {
                         onFrameRenderedListener = {
-                            // Scrape the TextureView for MediaPipe
-                            val bitmap = fragmentCameraBinding.smartGlassesH264View.bitmap
-                            if (bitmap != null) {
-                                updateFpsCounter(camFpsQueue, fragmentCameraBinding.textCameraFps, "Cam FPS")
-                                if (this@CameraFragment::backgroundExecutor.isInitialized && !backgroundExecutor.isShutdown) {
-                                    backgroundExecutor.execute {
-                                        if (!isBlinking) {
-                                            handLandmarkerHelper.detectLiveStreamBitmap(bitmap, isSmartGlassesFlipped, isSmartGlassesMirrored)
-                                        }
-                                    }
+                            // Update cam FPS to reflect physical decode rate
+                            updateFpsCounter(camFpsQueue, fragmentCameraBinding.textCameraFps, "Cam FPS")
+                            
+                            // Only scrape the TextureView for MediaPipe if the previous frame is done processing!
+                            if (this@CameraFragment::backgroundExecutor.isInitialized && !backgroundExecutor.isShutdown && sharedTrackingBitmap != null && pixelCopyHandler != null) {
+                                if (isProcessingFrame.compareAndSet(false, true)) {
+                                    android.view.PixelCopy.request(
+                                        surface,
+                                        sharedTrackingBitmap!!,
+                                        { copyResult ->
+                                            if (copyResult == android.view.PixelCopy.SUCCESS) {
+                                                backgroundExecutor.execute {
+                                                    try {
+                                                        if (!isBlinking) {
+                                                            handLandmarkerHelper.detectLiveStreamBitmap(sharedTrackingBitmap!!, isSmartGlassesFlipped, isSmartGlassesMirrored)
+                                                        } else {
+                                                            isProcessingFrame.set(false)
+                                                        }
+                                                    } catch (e: Exception) {
+                                                        isProcessingFrame.set(false)
+                                                    }
+                                                }
+                                            } else {
+                                                isProcessingFrame.set(false)
+                                            }
+                                        },
+                                        pixelCopyHandler!!
+                                    )
                                 }
                             }
                         }
@@ -795,6 +828,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     override fun onResults(
         resultBundle: HandLandmarkerHelper.ResultBundle
     ) {
+        isProcessingFrame.set(false)
         updateFpsCounter(mpFpsQueue, fragmentCameraBinding.textMediapipeFps, "MP FPS")
         activity?.runOnUiThread {
             if (_fragmentCameraBinding != null) {
@@ -840,6 +874,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     }
 
     override fun onError(error: String, errorCode: Int) {
+        isProcessingFrame.set(false)
         activity?.runOnUiThread {
             Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
             if (errorCode == HandLandmarkerHelper.GPU_ERROR) {
