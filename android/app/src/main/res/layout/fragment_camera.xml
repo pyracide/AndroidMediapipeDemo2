@@ -39,6 +39,15 @@
         app:layout_constraintTop_toTopOf="@id/view_finder"
         app:layout_constraintBottom_toBottomOf="@id/view_finder"/>
 
+    <!-- Smart Glasses H.264 Texture View -->
+    <TextureView
+        android:id="@+id/smart_glasses_h264_view"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="@id/view_finder"
+        app:layout_constraintBottom_toBottomOf="@id/view_finder"/>
+
     <com.google.mediapipe.examples.handlandmarker.OverlayView
         android:id="@+id/overlay"
         android:layout_width="match_parent"

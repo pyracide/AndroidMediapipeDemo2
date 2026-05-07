@@ -46,6 +46,7 @@ import com.google.mediapipe.examples.handlandmarker.MainViewModel
 import com.google.mediapipe.examples.handlandmarker.OverlayView
 import com.google.mediapipe.examples.handlandmarker.R
 import com.google.mediapipe.examples.handlandmarker.SmartGlassesStreamService
+import com.google.mediapipe.examples.handlandmarker.H264Decoder
 import com.google.mediapipe.examples.handlandmarker.databinding.FragmentCameraBinding
 import com.google.mediapipe.examples.handlandmarker.databinding.InfoBottomSheetBinding
 import com.google.mediapipe.examples.handlandmarker.myscript.Item
@@ -90,6 +91,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private var isSmartGlassesMirrored = false
     private var smartGlassesService: SmartGlassesStreamService? = null
     private var lastSocketUrl = "ws://192.168.1.218:81"
+    private var h264Decoder: H264Decoder? = null
     
     private var myScriptService: MyScriptService? = null
     private var tts: TextToSpeech? = null
@@ -230,6 +232,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                     }
                 }
             }
+            
+            override fun onH264NalUnitReceived(data: ByteArray) {
+                h264Decoder?.decodeNalUnit(data)
+            }
 
             override fun onConnectionStatusChanged(isConnected: Boolean, message: String?) {
                 activity?.runOnUiThread {
@@ -357,17 +363,29 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private fun toggleSmartGlassesMode() {
         if (!isSmartGlassesMode) {
             // Enable Smart Glasses Mode
-            val input = EditText(requireContext())
+            val layout = android.widget.LinearLayout(requireContext()).apply { 
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(50, 40, 50, 10) 
+            }
+            val input = android.widget.EditText(requireContext())
             input.setText(lastSocketUrl)
             
-            AlertDialog.Builder(requireContext())
+            val h264Switch = androidx.appcompat.widget.SwitchCompat(requireContext())
+            h264Switch.text = "Enable Raw H.264 Mode"
+            h264Switch.isChecked = false // Default to classic MJPEG
+            h264Switch.setPadding(0, 30, 0, 0)
+            
+            layout.addView(input)
+            layout.addView(h264Switch)
+            
+            android.app.AlertDialog.Builder(requireContext())
                 .setTitle("Connect to Websocket")
-                .setView(input)
+                .setView(layout)
                 .setPositiveButton("Connect") { _, _ ->
                     val url = input.text.toString()
                     if (url.isNotBlank()) {
                         lastSocketUrl = url
-                        enableSmartGlasses(url)
+                        enableSmartGlasses(url, h264Switch.isChecked)
                     }
                 }
                 .setNegativeButton("Cancel", null)
@@ -378,21 +396,61 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         }
     }
     
-    private fun enableSmartGlasses(url: String) {
+    private fun enableSmartGlasses(url: String, isH264Mode: Boolean) {
         isSmartGlassesMode = true
         // 1. Unbind local camera
         cameraProvider?.unbindAll()
         fragmentCameraBinding.viewFinder.visibility = View.INVISIBLE
         
-        // 2. Show SG View
-        fragmentCameraBinding.smartGlassesView.visibility = View.VISIBLE
+        // 1.5 Prepare H264 Decoder if needed
+        if (isH264Mode) {
+            fragmentCameraBinding.smartGlassesH264View.visibility = View.VISIBLE
+            fragmentCameraBinding.smartGlassesView.visibility = View.GONE
+            
+            fragmentCameraBinding.smartGlassesH264View.surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                    val surface = android.view.Surface(surfaceTexture)
+                    h264Decoder = H264Decoder(surface).apply {
+                        onFrameRenderedListener = {
+                            // Scrape the TextureView for MediaPipe
+                            val bitmap = fragmentCameraBinding.smartGlassesH264View.bitmap
+                            if (bitmap != null) {
+                                updateFpsCounter(camFpsQueue, fragmentCameraBinding.textCameraFps, "Cam FPS")
+                                if (this@CameraFragment::backgroundExecutor.isInitialized && !backgroundExecutor.isShutdown) {
+                                    backgroundExecutor.execute {
+                                        if (!isBlinking) {
+                                            handLandmarkerHelper.detectLiveStreamBitmap(bitmap, isSmartGlassesFlipped, isSmartGlassesMirrored)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        start()
+                    }
+                    // Connect only after decoder is ready
+                    smartGlassesService?.connect(url, true)
+                }
+
+                override fun onSurfaceTextureSizeChanged(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {}
+                override fun onSurfaceTextureDestroyed(surface: android.graphics.SurfaceTexture): Boolean {
+                    h264Decoder?.stop()
+                    h264Decoder = null
+                    return true
+                }
+                override fun onSurfaceTextureUpdated(surface: android.graphics.SurfaceTexture) {}
+            }
+        } else {
+            fragmentCameraBinding.smartGlassesView.visibility = View.VISIBLE
+            fragmentCameraBinding.smartGlassesH264View.visibility = View.GONE
+            
+            // Connect immediately for MJPEG
+            smartGlassesService?.connect(url, false)
+        }
+        
         fragmentCameraBinding.btnMirrorCamera.visibility = View.VISIBLE
         
-        // 3. Connect
-        smartGlassesService?.connect(url)
-        
         // Update Button visual state (optional)
-        fragmentCameraBinding.btnSmartGlasses.setColorFilter(ContextCompat.getColor(requireContext(), R.color.mp_color_primary))
+        fragmentCameraBinding.btnSmartGlasses.setColorFilter(androidx.core.content.ContextCompat.getColor(requireContext(), com.google.mediapipe.examples.handlandmarker.R.color.mp_color_primary))
     }
     
     private fun disableSmartGlasses() {
@@ -400,9 +458,13 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         // 1. Disconnect
         smartGlassesService?.disconnect()
         
+        h264Decoder?.stop()
+        h264Decoder = null
+        
         // 2. Hide SG View
         fragmentCameraBinding.smartGlassesView.setImageBitmap(null)
         fragmentCameraBinding.smartGlassesView.visibility = View.GONE
+        fragmentCameraBinding.smartGlassesH264View.visibility = View.GONE
         fragmentCameraBinding.btnMirrorCamera.visibility = View.GONE
         
         // 3. Rebind local camera

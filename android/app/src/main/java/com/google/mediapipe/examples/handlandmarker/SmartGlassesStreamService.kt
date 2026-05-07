@@ -19,6 +19,7 @@ class SmartGlassesStreamService(private val listener: StreamListener) {
 
     interface StreamListener {
         fun onFrameReceived(bitmap: Bitmap)
+        fun onH264NalUnitReceived(data: ByteArray)
         fun onConnectionStatusChanged(isConnected: Boolean, message: String? = null)
     }
 
@@ -31,11 +32,14 @@ class SmartGlassesStreamService(private val listener: StreamListener) {
     private val frameChannel = Channel<ByteArray>(Channel.CONFLATED)
     private val scope = CoroutineScope(Dispatchers.Default)
 
+    private var isH264Mode = false
+
     init {
         startFrameProcessor()
     }
 
-    fun connect(url: String) {
+    fun connect(url: String, h264Mode: Boolean = false) {
+        isH264Mode = h264Mode
         val request = Request.Builder().url(url).build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -44,8 +48,13 @@ class SmartGlassesStreamService(private val listener: StreamListener) {
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                // Non-blocking send to channel (drops oldest if buffer full)
-                frameChannel.trySend(bytes.toByteArray())
+                val data = bytes.toByteArray()
+                if (isH264Mode) {
+                    listener.onH264NalUnitReceived(data)
+                } else {
+                    // Non-blocking send to channel (drops oldest if buffer full)
+                    frameChannel.trySend(data)
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
