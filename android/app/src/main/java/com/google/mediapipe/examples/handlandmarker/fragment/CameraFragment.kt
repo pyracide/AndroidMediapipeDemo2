@@ -482,6 +482,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             
             fragmentCameraBinding.smartGlassesH264View.surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
                 override fun onSurfaceTextureAvailable(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                    // Initialize with view dimensions, will be updated when video size is known
                     sharedTrackingBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                     val surface = android.view.Surface(surfaceTexture)
                     
@@ -558,10 +559,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         // Configure for ultra-low latency
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                100, // minBufferMs
-                200, // maxBufferMs
-                100, // bufferForPlaybackMs
-                100  // bufferForPlaybackAfterRebufferMs
+                0, // minBufferMs
+                0, // maxBufferMs
+                0, // bufferForPlaybackMs
+                0  // bufferForPlaybackAfterRebufferMs
             )
             .build()
 
@@ -582,6 +583,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 
                 val mediaSource = RtspMediaSource.Factory()
                     .setForceUseRtpTcp(false) // Favor UDP
+                    .setTimeoutMs(2000)
                     .createMediaSource(mediaItem)
                 
                 setMediaSource(mediaSource)
@@ -593,6 +595,16 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 // Media3 can provide a callback via addAnalyticsListener or a custom VideoRenderer.
                 // To keep it simple and robust, we'll use TextureView's update callback if possible,
                 // or just trigger the handleDecodedFrame logic periodically or via player events.
+                
+                addListener(object : androidx.media3.common.Player.Listener {
+                    override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                        if (videoSize.width > 0 && videoSize.height > 0) {
+                            // Re-allocate bitmap to match actual video dimensions for accurate tracking
+                            sharedTrackingBitmap = Bitmap.createBitmap(videoSize.width, videoSize.height, Bitmap.Config.ARGB_8888)
+                            adjustAspectRatio(videoSize.width, videoSize.height)
+                        }
+                    }
+                })
                 
                 prepare()
                 play()
@@ -612,6 +624,51 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 // Perfect for zero-copy-ish scraping via PixelCopy.
                 handleDecodedFrame(surface)
             }
+        }
+    }
+
+    
+
+    private fun adjustAspectRatio(videoWidth: Int, videoHeight: Int) {
+        val container = fragmentCameraBinding.smartGlassesH264View.parent as? View ?: return
+        val containerWidth = container.width
+        val containerHeight = container.height
+        
+        if (containerWidth == 0 || containerHeight == 0) return
+        
+        val aspectRatio = videoWidth.toFloat() / videoHeight
+        
+        // Calculate dimensions to fill the width of the phone
+        val targetWidth = containerWidth
+        val targetHeight = (containerWidth / aspectRatio).toInt()
+        
+        // Ensure we don't exceed container height (rare on phones for landscape video)
+        val finalWidth: Int
+        val finalHeight: Int
+        if (targetHeight > containerHeight) {
+            finalHeight = containerHeight
+            finalWidth = (containerHeight * aspectRatio).toInt()
+        } else {
+            finalWidth = targetWidth
+            finalHeight = targetHeight
+        }
+        
+        // Update LayoutParams for BOTH views to ensure pixel-perfect alignment
+        fragmentCameraBinding.smartGlassesH264View.post {
+            // Update H264 TextureView
+            val h264Params = fragmentCameraBinding.smartGlassesH264View.layoutParams
+            h264Params.width = finalWidth
+            h264Params.height = finalHeight
+            fragmentCameraBinding.smartGlassesH264View.layoutParams = h264Params
+            
+            // Update OverlayView
+            val overlayParams = fragmentCameraBinding.overlay.layoutParams
+            overlayParams.width = finalWidth
+            overlayParams.height = finalHeight
+            fragmentCameraBinding.overlay.layoutParams = overlayParams
+            
+            // Remove any previously applied matrix transforms
+            fragmentCameraBinding.smartGlassesH264View.setTransform(null)
         }
     }
 
