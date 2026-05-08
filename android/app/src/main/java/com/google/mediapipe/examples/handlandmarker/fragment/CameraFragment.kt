@@ -58,11 +58,18 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import android.hardware.camera2.CameraCharacteristics
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.rtsp.RtspMediaSource
+import androidx.media3.exoplayer.DefaultLoadControl
 
 class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, TextToSpeech.OnInitListener {
 
     companion object {
-        private const val TAG = "Hand Landmarker"
+        private const val TAG = "CameraFragment"
+        private const val MODE_CLASSIC = 0
+        private const val MODE_H264_CLASSIC = 1
+        private const val MODE_H264_RTSP = 2
     }
 
     private var _fragmentCameraBinding: FragmentCameraBinding? = null
@@ -92,6 +99,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private var smartGlassesService: SmartGlassesStreamService? = null
     private var lastSocketUrl = "ws://192.168.1.218:81"
     private var h264Decoder: H264Decoder? = null
+    
+    // RTSP Player
+    private var exoPlayer: ExoPlayer? = null
+    private var currentStreamMode = MODE_CLASSIC
+
     
     private var myScriptService: MyScriptService? = null
     private var tts: TextToSpeech? = null
@@ -381,25 +393,70 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 orientation = android.widget.LinearLayout.VERTICAL
                 setPadding(50, 40, 50, 10) 
             }
+            
             val input = android.widget.EditText(requireContext())
             input.setText(lastSocketUrl)
             
-            val h264Switch = androidx.appcompat.widget.SwitchCompat(requireContext())
-            h264Switch.text = "Enable Raw H.264 Mode"
-            h264Switch.isChecked = false // Default to classic MJPEG
-            h264Switch.setPadding(0, 30, 0, 0)
+            val radioGroup = android.widget.RadioGroup(requireContext()).apply {
+                orientation = android.widget.RadioGroup.VERTICAL
+                setPadding(0, 20, 0, 0)
+            }
+            
+            val rbClassic = android.widget.RadioButton(requireContext()).apply {
+                text = "Classic (MJPEG)"
+                id = android.view.View.generateViewId()
+            }
+            val rbH264Classic = android.widget.RadioButton(requireContext()).apply {
+                text = "H.264 Classic (NAL)"
+                id = android.view.View.generateViewId()
+            }
+            val rbRtsp = android.widget.RadioButton(requireContext()).apply {
+                text = "H.264 RTSP (UDP)"
+                id = android.view.View.generateViewId()
+            }
+            
+            radioGroup.addView(rbClassic)
+            radioGroup.addView(rbH264Classic)
+            radioGroup.addView(rbRtsp)
+            
+            // Default selection based on current/last state
+            when(currentStreamMode) {
+                MODE_CLASSIC -> rbClassic.isChecked = true
+                MODE_H264_CLASSIC -> rbH264Classic.isChecked = true
+                MODE_H264_RTSP -> rbRtsp.isChecked = true
+            }
+            
+            radioGroup.setOnCheckedChangeListener { _, checkedId ->
+                val ip = lastSocketUrl.substringAfter("//").substringBefore(":")
+                when(checkedId) {
+                    rbClassic.id -> {
+                        input.setText("ws://$ip:81")
+                    }
+                    rbH264Classic.id -> {
+                        input.setText("ws://$ip:81")
+                    }
+                    rbRtsp.id -> {
+                        input.setText("rtsp://$ip:554/h264/1")
+                    }
+                }
+            }
             
             layout.addView(input)
-            layout.addView(h264Switch)
+            layout.addView(radioGroup)
             
             android.app.AlertDialog.Builder(requireContext())
-                .setTitle("Connect to Websocket")
+                .setTitle("Connect to Smart Glasses")
                 .setView(layout)
                 .setPositiveButton("Connect") { _, _ ->
                     val url = input.text.toString()
                     if (url.isNotBlank()) {
                         lastSocketUrl = url
-                        enableSmartGlasses(url, h264Switch.isChecked)
+                        val mode = when(radioGroup.checkedRadioButtonId) {
+                            rbH264Classic.id -> MODE_H264_CLASSIC
+                            rbRtsp.id -> MODE_H264_RTSP
+                            else -> MODE_CLASSIC
+                        }
+                        enableSmartGlasses(url, mode)
                     }
                 }
                 .setNegativeButton("Cancel", null)
@@ -410,14 +467,16 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         }
     }
     
-    private fun enableSmartGlasses(url: String, isH264Mode: Boolean) {
+    private fun enableSmartGlasses(url: String, mode: Int) {
         isSmartGlassesMode = true
+        currentStreamMode = mode
+        
         // 1. Unbind local camera
         cameraProvider?.unbindAll()
         fragmentCameraBinding.viewFinder.visibility = View.INVISIBLE
         
-        // 1.5 Prepare H264 Decoder if needed
-        if (isH264Mode) {
+        // 1.5 Prepare Decoder/Player
+        if (mode == MODE_H264_CLASSIC || mode == MODE_H264_RTSP) {
             fragmentCameraBinding.smartGlassesH264View.visibility = View.VISIBLE
             fragmentCameraBinding.smartGlassesView.visibility = View.GONE
             
@@ -425,49 +484,25 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 override fun onSurfaceTextureAvailable(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
                     sharedTrackingBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                     val surface = android.view.Surface(surfaceTexture)
-                    h264Decoder = H264Decoder(surface).apply {
-                        onFrameRenderedListener = {
-                            // Update cam FPS to reflect physical decode rate
-                            updateFpsCounter(camFpsQueue, fragmentCameraBinding.textCameraFps, "Cam FPS")
-                            
-                            // Only scrape the TextureView for MediaPipe if the previous frame is done processing!
-                            if (this@CameraFragment::backgroundExecutor.isInitialized && !backgroundExecutor.isShutdown && sharedTrackingBitmap != null && pixelCopyHandler != null) {
-                                if (isProcessingFrame.compareAndSet(false, true)) {
-                                    android.view.PixelCopy.request(
-                                        surface,
-                                        sharedTrackingBitmap!!,
-                                        { copyResult ->
-                                            if (copyResult == android.view.PixelCopy.SUCCESS) {
-                                                backgroundExecutor.execute {
-                                                    try {
-                                                        if (!isBlinking) {
-                                                            handLandmarkerHelper.detectLiveStreamBitmap(sharedTrackingBitmap!!, isSmartGlassesFlipped, isSmartGlassesMirrored)
-                                                        } else {
-                                                            isProcessingFrame.set(false)
-                                                        }
-                                                    } catch (e: Exception) {
-                                                        isProcessingFrame.set(false)
-                                                    }
-                                                }
-                                            } else {
-                                                isProcessingFrame.set(false)
-                                            }
-                                        },
-                                        pixelCopyHandler!!
-                                    )
-                                }
+                    
+                    if (mode == MODE_H264_CLASSIC) {
+                        h264Decoder = H264Decoder(surface).apply {
+                            onFrameRenderedListener = {
+                                handleDecodedFrame(surface)
                             }
+                            start()
                         }
-                        start()
+                        smartGlassesService?.connect(url, true)
+                    } else if (mode == MODE_H264_RTSP) {
+                        setupRtspPlayer(url, surface)
                     }
-                    // Connect only after decoder is ready
-                    smartGlassesService?.connect(url, true)
                 }
 
                 override fun onSurfaceTextureSizeChanged(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {}
                 override fun onSurfaceTextureDestroyed(surface: android.graphics.SurfaceTexture): Boolean {
                     h264Decoder?.stop()
                     h264Decoder = null
+                    releaseRtspPlayer()
                     return true
                 }
                 override fun onSurfaceTextureUpdated(surface: android.graphics.SurfaceTexture) {}
@@ -485,6 +520,108 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         // Update Button visual state (optional)
         fragmentCameraBinding.btnSmartGlasses.setColorFilter(androidx.core.content.ContextCompat.getColor(requireContext(), com.google.mediapipe.examples.handlandmarker.R.color.mp_color_primary))
     }
+
+    private fun handleDecodedFrame(surface: android.view.Surface) {
+        // Update cam FPS to reflect physical decode rate
+        updateFpsCounter(camFpsQueue, fragmentCameraBinding.textCameraFps, "Cam FPS")
+        
+        // Only scrape the TextureView for MediaPipe if the previous frame is done processing!
+        if (this@CameraFragment::backgroundExecutor.isInitialized && !backgroundExecutor.isShutdown && sharedTrackingBitmap != null && pixelCopyHandler != null) {
+            if (isProcessingFrame.compareAndSet(false, true)) {
+                android.view.PixelCopy.request(
+                    surface,
+                    sharedTrackingBitmap!!,
+                    { copyResult ->
+                        if (copyResult == android.view.PixelCopy.SUCCESS) {
+                            backgroundExecutor.execute {
+                                try {
+                                    if (!isBlinking) {
+                                        handLandmarkerHelper.detectLiveStreamBitmap(sharedTrackingBitmap!!, isSmartGlassesFlipped, isSmartGlassesMirrored)
+                                    } else {
+                                        isProcessingFrame.set(false)
+                                    }
+                                } catch (e: Exception) {
+                                    isProcessingFrame.set(false)
+                                }
+                            }
+                        } else {
+                            isProcessingFrame.set(false)
+                        }
+                    },
+                    pixelCopyHandler!!
+                )
+            }
+        }
+    }
+
+    private fun setupRtspPlayer(url: String, surface: android.view.Surface) {
+        // Configure for ultra-low latency
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                100, // minBufferMs
+                200, // maxBufferMs
+                100, // bufferForPlaybackMs
+                100  // bufferForPlaybackAfterRebufferMs
+            )
+            .build()
+
+        exoPlayer = ExoPlayer.Builder(requireContext())
+            .setLoadControl(loadControl)
+            .build()
+            .apply {
+                setVideoSurface(surface)
+                
+                val mediaItem = MediaItem.Builder()
+                    .setUri(url)
+                    .setLiveConfiguration(
+                        MediaItem.LiveConfiguration.Builder()
+                            .setTargetOffsetMs(0)
+                            .build()
+                    )
+                    .build()
+                
+                val mediaSource = RtspMediaSource.Factory()
+                    .setForceUseRtpTcp(false) // Favor UDP
+                    .createMediaSource(mediaItem)
+                
+                setMediaSource(mediaSource)
+                
+                // Add listener to trigger inference when frames are rendered
+                // ExoPlayer doesn't have a direct "onFrameRendered" callback easily available here without more boilerplate,
+                // but we can use the TextureView's onSurfaceTextureUpdated or a periodic scrape.
+                // However, for RTSP, we want to mirror the H264 Classic logic.
+                // Media3 can provide a callback via addAnalyticsListener or a custom VideoRenderer.
+                // To keep it simple and robust, we'll use TextureView's update callback if possible,
+                // or just trigger the handleDecodedFrame logic periodically or via player events.
+                
+                prepare()
+                play()
+            }
+            
+        // For MediaPipe, we need to know when frames arrive.
+        // Since we are using TextureView, we can use onSurfaceTextureUpdated.
+        fragmentCameraBinding.smartGlassesH264View.surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) {}
+            override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) {}
+            override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean {
+                releaseRtspPlayer()
+                return true
+            }
+            override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) {
+                // This is called every time a new frame is drawn to the TextureView!
+                // Perfect for zero-copy-ish scraping via PixelCopy.
+                handleDecodedFrame(surface)
+            }
+        }
+    }
+
+    private fun releaseRtspPlayer() {
+        exoPlayer?.let {
+            it.stop()
+            it.release()
+        }
+        exoPlayer = null
+    }
     
     private fun disableSmartGlasses() {
         isSmartGlassesMode = false
@@ -493,6 +630,8 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         
         h264Decoder?.stop()
         h264Decoder = null
+        
+        releaseRtspPlayer()
         
         // 2. Hide SG View
         fragmentCameraBinding.smartGlassesView.setImageBitmap(null)

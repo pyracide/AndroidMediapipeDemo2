@@ -130,10 +130,15 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
             // Draw dot if writing
             if (isWriting && results?.landmarks()?.isNotEmpty() == true) {
                  val landmark = results!!.landmarks().first()
+                 val thumbTip = landmark[4]
                  val indexTip = landmark[8]
+                 
+                 val avgX = (indexTip.x() + thumbTip.x()) / 2f
+                 val avgY = (indexTip.y() + thumbTip.y()) / 2f
+                 
                  canvas.drawPoint(
-                     indexTip.x() * imageWidth * scaleFactor + offsetX,
-                     indexTip.y() * imageHeight * scaleFactor + offsetY,
+                     avgX * imageWidth * scaleFactor + offsetX,
+                     avgY * imageHeight * scaleFactor + offsetY,
                      drawingDotPaint
                  )
             }
@@ -198,10 +203,14 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
             if (isDrawingMode) {
                 processGesture(firstHand)
             } else {
-                // Just track index tip for debug
+                // Just track midpoint for debug
+                val thumbTip = firstHand[4]
                 val indexTip = firstHand[8]
-                val x = indexTip.x() * imageWidth * scaleFactor + offsetX
-                val y = indexTip.y() * imageHeight * scaleFactor + offsetY
+                val avgX = (indexTip.x() + thumbTip.x()) / 2f
+                val avgY = (indexTip.y() + thumbTip.y()) / 2f
+                
+                val x = avgX * imageWidth * scaleFactor + offsetX
+                val y = avgY * imageHeight * scaleFactor + offsetY
                 strokeListener?.onDebugCoords(x, y)
             }
         }
@@ -234,8 +243,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
             Log.d("OverlayView", "DOWN")
             // Start new path
             currentPath = Path()
-            val x = indexTip.x() * imageWidth * scaleFactor + offsetX
-            val y = indexTip.y() * imageHeight * scaleFactor + offsetY
+            val avgX = (indexTip.x() + thumbTip.x()) / 2f
+            val avgY = (indexTip.y() + thumbTip.y()) / 2f
+            
+            val x = avgX * imageWidth * scaleFactor + offsetX
+            val y = avgY * imageHeight * scaleFactor + offsetY
             currentPath?.moveTo(x, y)
             currentStrokePoints.clear()
             currentStrokePoints.add(MyScriptService.PointData(x, y, System.currentTimeMillis()))
@@ -254,8 +266,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
         }
         
         if (isWriting) {
-            val x = indexTip.x() * imageWidth * scaleFactor + offsetX
-            val y = indexTip.y() * imageHeight * scaleFactor + offsetY
+            val avgX = (indexTip.x() + thumbTip.x()) / 2f
+            val avgY = (indexTip.y() + thumbTip.y()) / 2f
+            
+            val x = avgX * imageWidth * scaleFactor + offsetX
+            val y = avgY * imageHeight * scaleFactor + offsetY
             currentPath?.lineTo(x, y)
             currentStrokePoints.add(MyScriptService.PointData(x, y, System.currentTimeMillis()))
         }
