@@ -39,9 +39,18 @@
         app:layout_constraintTop_toTopOf="@id/view_finder"
         app:layout_constraintBottom_toBottomOf="@id/view_finder"/>
 
-    <!-- Smart Glasses H.264 Texture View -->
+    <!-- Smart Glasses H.264 Texture View (Classic) -->
     <TextureView
         android:id="@+id/smart_glasses_h264_view"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="@id/view_finder"
+        app:layout_constraintBottom_toBottomOf="@id/view_finder"/>
+
+    <!-- Smart Glasses H.264 RTSP View -->
+    <com.alexvas.rtsp.widget.RtspSurfaceView
+        android:id="@+id/smart_glasses_rtsp_view"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:visibility="gone"
