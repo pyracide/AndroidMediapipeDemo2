@@ -118,6 +118,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private var isNgDebugEnabled = false
     private var isNgramEnabled = true
     private var wasHandPresent = false
+    private var scraperTargetHeight = 720
     
     private val camFpsQueue = java.util.ArrayDeque<Long>()
     private val mpFpsQueue = java.util.ArrayDeque<Long>()
@@ -131,6 +132,13 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private val bufferLock = Any()
     private var pixelCopyThread: android.os.HandlerThread? = null
     private var pixelCopyHandler: android.os.Handler? = null
+    
+    // Jitter Buffer / Pacer
+    private var isJitterBufferEnabled = false
+    private val pacerQueue = java.util.LinkedList<Bitmap>()
+    private val pacerPool = java.util.LinkedList<Bitmap>()
+    private val pacerHandler = Handler(Looper.getMainLooper())
+    private var pacerRunnable: Runnable? = null
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
@@ -413,6 +421,51 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             toggleSmartGlassesMode()
         }
     }
+
+    private fun startPacerIfNeeded() {
+        if (pacerRunnable != null) return
+        
+        pacerRunnable = object : Runnable {
+            override fun run() {
+                if (!isJitterBufferEnabled || pacerQueue.isEmpty()) {
+                    pacerRunnable = null
+                    return
+                }
+
+                if (isProcessingFrame.compareAndSet(false, true)) {
+                    val bitmapToProcess = synchronized(bufferLock) {
+                        if (pacerQueue.isNotEmpty()) pacerQueue.removeFirst() else null
+                    }
+
+                    if (bitmapToProcess != null) {
+                        backgroundExecutor.execute {
+                            try {
+                                if (!isBlinking) {
+                                    handLandmarkerHelper.detectLiveStreamBitmap(bitmapToProcess, isSmartGlassesFlipped, isSmartGlassesMirrored)
+                                }
+                                // Return the bitmap to the pool when done
+                                synchronized(bufferLock) {
+                                    pacerPool.add(bitmapToProcess)
+                                }
+                                isProcessingFrame.set(false)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error in pacer processing", e)
+                                synchronized(bufferLock) {
+                                    pacerPool.add(bitmapToProcess)
+                                }
+                                isProcessingFrame.set(false)
+                            }
+                        }
+                    } else {
+                        isProcessingFrame.set(false)
+                    }
+                }
+                
+                pacerHandler.postDelayed(this, 33) // Steady 30fps pacing
+            }
+        }
+        pacerHandler.post(pacerRunnable!!)
+    }
     
     private fun toggleSmartGlassesMode() {
         if (!isSmartGlassesMode) {
@@ -584,6 +637,31 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     }
 
     private fun triggerInference() {
+        if (isJitterBufferEnabled) {
+            // Smooth Mode: Add to queue using pointer swapping (Zero Allocation)
+            synchronized(bufferLock) {
+                if (isNewFrameReady) {
+                    bufferReady?.let { source ->
+                        // Get a spare bitmap from the pool
+                        val pacedBitmap = if (pacerPool.isNotEmpty()) pacerPool.removeFirst() else Bitmap.createBitmap(source)
+                        
+                        // Copy the pixels efficiently (still faster than createBitmap)
+                        val canvas = android.graphics.Canvas(pacedBitmap)
+                        canvas.drawBitmap(source, 0f, 0f, null)
+                        
+                        pacerQueue.add(pacedBitmap)
+                        // Keep queue small to prevent excessive latency (max 3 frames ~100ms)
+                        while (pacerQueue.size > 3) {
+                            pacerPool.add(pacerQueue.removeFirst())
+                        }
+                    }
+                    isNewFrameReady = false
+                }
+            }
+            startPacerIfNeeded()
+            return
+        }
+
         if (isProcessingFrame.compareAndSet(false, true)) {
             synchronized(bufferLock) {
                 if (!isNewFrameReady) {
@@ -622,26 +700,46 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             setStatusListener(object : RtspStatusListener {
                 override fun onRtspFirstFrameRendered() {
                     Log.d(TAG, "RTSP First Frame Rendered")
-                    fragmentCameraBinding.smartGlassesRtspView.post {
-                        val w = fragmentCameraBinding.smartGlassesRtspView.width
-                        val h = fragmentCameraBinding.smartGlassesRtspView.height
-                        if (w > 0 && h > 0) {
-                            bufferWriting = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                            bufferReady = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                            bufferReading = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                        }
-                    }
+                    reinitScraperBitmaps()
                     startFrameScraping()
                 }
 
                 override fun onRtspFrameSizeChanged(width: Int, height: Int) {
                     Log.d(TAG, "RTSP Frame Size Changed: $width x $height")
                     adjustAspectRatio(width, height)
+                    // Re-init bitmaps if aspect ratio changed significantly
+                    reinitScraperBitmaps()
                 }
             })
             
             // API 5.6.4 uses requestVideo/requestAudio
             start(requestVideo = true, requestAudio = false)
+        }
+    }
+
+    private fun reinitScraperBitmaps() {
+        val view = fragmentCameraBinding.smartGlassesRtspView
+        // Use the layout dimensions to get the correct aspect ratio
+        val layoutWidth = view.width
+        val layoutHeight = view.height
+        
+        if (layoutWidth > 0 && layoutHeight > 0) {
+            val ratio = layoutWidth.toFloat() / layoutHeight
+            val targetH = scraperTargetHeight
+            val targetW = (targetH * ratio).toInt()
+            
+            Log.d(TAG, "Initializing scraper bitmaps at $targetW x $targetH (Target ${targetH}p)")
+            
+            synchronized(bufferLock) {
+                // Safely re-create the bitmaps
+                bufferWriting = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                bufferReady = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                bufferReading = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                isNewFrameReady = false
+            }
+        } else {
+            // Fallback if view not laid out yet - retry in a bit
+            view.post { reinitScraperBitmaps() }
         }
     }
 
@@ -922,6 +1020,32 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                     /* no op */
                 }
             }
+            
+        // Scraper resolution spinner
+        val resOptions = listOf(360, 420, 540, 720, 1080)
+        val currentResIndex = resOptions.indexOf(scraperTargetHeight).coerceAtLeast(0)
+        bottomSheetBinding!!.spinnerScraperRes.setSelection(currentResIndex, false)
+        bottomSheetBinding!!.spinnerScraperRes.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val newHeight = resOptions[position]
+                if (newHeight != scraperTargetHeight) {
+                    scraperTargetHeight = newHeight
+                    if (isSmartGlassesMode && currentStreamMode == MODE_H264_RTSP) {
+                        reinitScraperBitmaps()
+                    }
+                }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        
+        bottomSheetBinding!!.jitterBufferSwitch.setOnCheckedChangeListener { _, isChecked ->
+            isJitterBufferEnabled = isChecked
+            if (!isChecked) {
+                synchronized(bufferLock) {
+                    pacerQueue.clear()
+                }
+            }
+        }
     }
 
     // Update the values displayed in the bottom sheet. Reset Handlandmarker

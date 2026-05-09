@@ -49,4 +49,15 @@
         <item>CPU</item>
         <item>GPU</item>
     </string-array>
+
+    <string name="label_scraper_res">Scraper Resolution</string>
+    <string-array name="scraper_res_titles">
+        <item>360p</item>
+        <item>420p</item>
+        <item>540p</item>
+        <item>720p</item>
+        <item>1080p</item>
+    </string-array>
+
+    <string name="label_jitter_buffer">Smooth Motion (Jitter Buffer)</string>
 </resources>
