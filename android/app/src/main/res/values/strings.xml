@@ -60,4 +60,5 @@
     </string-array>
 
     <string name="label_jitter_buffer">Smooth Motion (Jitter Buffer)</string>
+    <string name="label_tap_gestures">Tap Gestures</string>
 </resources>

@@ -65,10 +65,23 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
     private val currentStrokePoints = mutableListOf<MyScriptService.PointData>()
     var strokeListener: OnStrokeListener? = null
     private var lastClearTime = 0L
+    private var tapCount = 0
+    private var lastTapTime = 0L
+    private val tapHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val tapRunnable = Runnable {
+        if (tapCount == 2) {
+            strokeListener?.onDoublePinch()
+        }
+        tapCount = 0
+    }
+    var isTapGesturesEnabled = true
+    private var isTapTriggered = false
 
     interface OnStrokeListener {
         fun onStroke(points: List<MyScriptService.PointData>)
         fun onClear()
+        fun onDoublePinch()
+        fun onTriplePinch()
         fun onDebugCoords(x: Float, y: Float)
     }
 
@@ -238,6 +251,33 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
         val START_THRESHOLD = 0.20
         val STOP_THRESHOLD = 0.30
         
+        // --- Tap Gesture Detection (Double/Triple Pinch) ---
+        // We use an independent trigger without hysteresis for "snappy" detection
+        if (isTapGesturesEnabled) {
+            if (ratio < START_THRESHOLD && !isTapTriggered) {
+                isTapTriggered = true
+                val currentTime = System.currentTimeMillis()
+                if (currentTime - lastTapTime > 500) {
+                    tapCount = 1
+                } else {
+                    tapCount++
+                }
+                lastTapTime = currentTime
+                
+                tapHandler.removeCallbacks(tapRunnable)
+                if (tapCount == 3) {
+                    Log.d("OverlayView", "TRIPLE PINCH")
+                    strokeListener?.onTriplePinch()
+                    tapCount = 0
+                } else {
+                    tapHandler.postDelayed(tapRunnable, 500)
+                }
+            } else if (ratio > START_THRESHOLD) {
+                isTapTriggered = false
+            }
+        }
+
+        // --- Pinch Detection (The "Pen" with Hysteresis) ---
         if (!isWriting && ratio < START_THRESHOLD) {
             isWriting = true
             Log.d("OverlayView", "DOWN")

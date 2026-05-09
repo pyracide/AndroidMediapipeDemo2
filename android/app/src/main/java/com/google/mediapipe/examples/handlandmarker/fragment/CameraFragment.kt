@@ -321,6 +321,23 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 // When user clears drawing, trigger recognition commit
                 myScriptService?.commitAndClear()
             }
+            override fun onDoublePinch() {
+                // Silent Clear - visually remove dots 0.1s later
+                fragmentCameraBinding.overlay.postDelayed({
+                    fragmentCameraBinding.overlay.clearDrawing()
+                    fragmentCameraBinding.overlay.invalidate()
+                }, 100)
+            }
+            override fun onTriplePinch() {
+                // User indicated a wrong word
+                tts?.speak("I mean", TextToSpeech.QUEUE_FLUSH, null, "DoublePinchUndo")
+                
+                // Clear the canvas visually 0.1s later
+                fragmentCameraBinding.overlay.postDelayed({
+                    fragmentCameraBinding.overlay.clearDrawing()
+                    fragmentCameraBinding.overlay.invalidate()
+                }, 100)
+            }
             override fun onDebugCoords(x: Float, y: Float) {
                 activity?.runOnUiThread {
                     fragmentCameraBinding.textDebugCoords.text = "X: ${x.toInt()}, Y: ${y.toInt()}"
@@ -1045,6 +1062,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                     pacerQueue.clear()
                 }
             }
+        }
+        
+        bottomSheetBinding!!.tapGesturesSwitch.isChecked = fragmentCameraBinding.overlay.isTapGesturesEnabled
+        bottomSheetBinding!!.tapGesturesSwitch.setOnCheckedChangeListener { _, isChecked ->
+            fragmentCameraBinding.overlay.isTapGesturesEnabled = isChecked
         }
     }
 
