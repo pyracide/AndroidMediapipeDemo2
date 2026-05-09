@@ -124,8 +124,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     
     private val isProcessingFrame = java.util.concurrent.atomic.AtomicBoolean(false)
     private val isCopyingFrame = java.util.concurrent.atomic.AtomicBoolean(false)
-    private var sharedTrackingBitmap: Bitmap? = null
-    private var inferenceBitmap: Bitmap? = null
+    private var bufferWriting: Bitmap? = null
+    private var bufferReady: Bitmap? = null
+    private var bufferReading: Bitmap? = null
+    private var isNewFrameReady = false
+    private val bufferLock = Any()
     private var pixelCopyThread: android.os.HandlerThread? = null
     private var pixelCopyHandler: android.os.Handler? = null
 
@@ -322,14 +325,34 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         fragmentCameraBinding.btnMirrorCamera.setOnClickListener {
             if (isSmartGlassesMode) {
                 isSmartGlassesMirrored = !isSmartGlassesMirrored
-                fragmentCameraBinding.smartGlassesView.scaleX = if (isSmartGlassesMirrored) -1f else 1f
+                val rotation = if (isSmartGlassesMirrored) 180f else 0f
+                val scale = if (isSmartGlassesMirrored) -1f else 1f
+                
+                // MJPEG and TextureView work with standard rotations
+                fragmentCameraBinding.smartGlassesView.rotationY = rotation
+                fragmentCameraBinding.smartGlassesH264View.rotationY = rotation
+                
+                // RTSP SurfaceView: Apply BOTH scale and rotation to the container and the view
+                // This is the most aggressive way to force the Hardware Composer to flip
+                fragmentCameraBinding.smartGlassesRtspContainer.scaleX = scale
+                fragmentCameraBinding.smartGlassesRtspView.scaleX = scale
+                fragmentCameraBinding.smartGlassesRtspView.rotationY = rotation
             }
         }
 
         fragmentCameraBinding.btnFlipCamera.setOnClickListener {
             if (isSmartGlassesMode) {
                 isSmartGlassesFlipped = !isSmartGlassesFlipped
-                fragmentCameraBinding.smartGlassesView.scaleY = if (isSmartGlassesFlipped) -1f else 1f
+                val rotation = if (isSmartGlassesFlipped) 180f else 0f
+                val scale = if (isSmartGlassesFlipped) -1f else 1f
+                
+                fragmentCameraBinding.smartGlassesView.rotationX = rotation
+                fragmentCameraBinding.smartGlassesH264View.rotationX = rotation
+                
+                // RTSP SurfaceView: Apply BOTH scale and rotation to the container and the view
+                fragmentCameraBinding.smartGlassesRtspContainer.scaleY = scale
+                fragmentCameraBinding.smartGlassesRtspView.scaleY = scale
+                fragmentCameraBinding.smartGlassesRtspView.rotationX = rotation
                 return@setOnClickListener
             }
             
@@ -441,7 +464,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                         input.setText("ws://$ip:81")
                     }
                     rbRtsp.id -> {
-                        input.setText("rtsp://$ip:554/h264/1")
+                        input.setText("rtsp://192.168.1.251:554/stream")
                     }
                 }
             }
@@ -488,8 +511,9 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             
             fragmentCameraBinding.smartGlassesH264View.surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
                 override fun onSurfaceTextureAvailable(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
-                    sharedTrackingBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                    inferenceBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    bufferWriting = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    bufferReady = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    bufferReading = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                     val surface = android.view.Surface(surfaceTexture)
                     
                     h264Decoder = H264Decoder(surface).apply {
@@ -510,7 +534,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 override fun onSurfaceTextureUpdated(surface: android.graphics.SurfaceTexture) {}
             }
         } else if (mode == MODE_H264_RTSP) {
-            fragmentCameraBinding.smartGlassesRtspView.visibility = View.VISIBLE
+            fragmentCameraBinding.smartGlassesRtspContainer.visibility = View.VISIBLE
             fragmentCameraBinding.smartGlassesH264View.visibility = View.GONE
             fragmentCameraBinding.smartGlassesView.visibility = View.GONE
             
@@ -533,40 +557,57 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         // Update cam FPS to reflect physical decode rate
         updateFpsCounter(camFpsQueue, fragmentCameraBinding.textCameraFps, "Cam FPS")
         
-        // Decoupled Scraper: Only block if we are actively copying a frame, ignore the Tracker state
-        if (this@CameraFragment::backgroundExecutor.isInitialized && !backgroundExecutor.isShutdown && sharedTrackingBitmap != null && pixelCopyHandler != null) {
+        // Decoupled Scraper: Continuously write to bufferWriting at 30fps
+        if (this@CameraFragment::backgroundExecutor.isInitialized && !backgroundExecutor.isShutdown && bufferWriting != null && pixelCopyHandler != null) {
             if (isCopyingFrame.compareAndSet(false, true)) {
                 android.view.PixelCopy.request(
                     surface,
-                    sharedTrackingBitmap!!,
+                    bufferWriting!!,
                     { copyResult ->
                         isCopyingFrame.set(false)
                         if (copyResult == android.view.PixelCopy.SUCCESS) {
-                            // Tracker Decoupling: Only submit to MediaPipe if it has finished the previous frame
-                            if (isProcessingFrame.compareAndSet(false, true)) {
-                                
-                                // Double Buffering (Ping-Pong): Swap the bitmaps so PixelCopy can overwrite one while MediaPipe reads the other
-                                val temp = sharedTrackingBitmap
-                                sharedTrackingBitmap = inferenceBitmap
-                                inferenceBitmap = temp
-                                
-                                backgroundExecutor.execute {
-                                    try {
-                                        if (!isBlinking && inferenceBitmap != null) {
-                                            handLandmarkerHelper.detectLiveStreamBitmap(inferenceBitmap!!, isSmartGlassesFlipped, isSmartGlassesMirrored)
-                                        } else {
-                                            isProcessingFrame.set(false)
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "Error in background processing", e)
-                                        isProcessingFrame.set(false)
-                                    }
-                                }
+                            // Swap with the ready buffer so Tracker can grab the freshest frame
+                            synchronized(bufferLock) {
+                                val temp = bufferReady
+                                bufferReady = bufferWriting
+                                bufferWriting = temp
+                                isNewFrameReady = true
                             }
+                            // Poke the tracker
+                            triggerInference()
                         }
                     },
                     pixelCopyHandler!!
                 )
+            }
+        }
+    }
+
+    private fun triggerInference() {
+        if (isProcessingFrame.compareAndSet(false, true)) {
+            synchronized(bufferLock) {
+                if (!isNewFrameReady) {
+                    isProcessingFrame.set(false)
+                    return
+                }
+                // Grab the freshest frame into the reading buffer
+                val temp = bufferReading
+                bufferReading = bufferReady
+                bufferReady = temp
+                isNewFrameReady = false
+            }
+            
+            backgroundExecutor.execute {
+                try {
+                    if (!isBlinking && bufferReading != null) {
+                        handLandmarkerHelper.detectLiveStreamBitmap(bufferReading!!, isSmartGlassesFlipped, isSmartGlassesMirrored)
+                    } else {
+                        isProcessingFrame.set(false)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in background processing", e)
+                    isProcessingFrame.set(false)
+                }
             }
         }
     }
@@ -585,8 +626,9 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                         val w = fragmentCameraBinding.smartGlassesRtspView.width
                         val h = fragmentCameraBinding.smartGlassesRtspView.height
                         if (w > 0 && h > 0) {
-                            sharedTrackingBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                            inferenceBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                            bufferWriting = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                            bufferReady = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                            bufferReading = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                         }
                     }
                     startFrameScraping()
@@ -611,7 +653,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 if (isSmartGlassesMode && currentStreamMode == MODE_H264_RTSP) {
                     val surface = fragmentCameraBinding.smartGlassesRtspView.holder.surface
                     // Unblock the scraper! Only prevent overlapping PixelCopies, let MediaPipe do its own thing.
-                    if (surface.isValid && sharedTrackingBitmap != null && !isCopyingFrame.get()) {
+                    if (surface.isValid && bufferWriting != null && !isCopyingFrame.get()) {
                         handleDecodedFrame(surface)
                     }
                 }
@@ -661,11 +703,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             h264Params.height = finalHeight
             fragmentCameraBinding.smartGlassesH264View.layoutParams = h264Params
             
-            // Update RTSP SurfaceView
-            val rtspParams = fragmentCameraBinding.smartGlassesRtspView.layoutParams
-            rtspParams.width = finalWidth
-            rtspParams.height = finalHeight
-            fragmentCameraBinding.smartGlassesRtspView.layoutParams = rtspParams
+            // Update RTSP SurfaceView Container
+            val rtspContainerParams = fragmentCameraBinding.smartGlassesRtspContainer.layoutParams
+            rtspContainerParams.width = finalWidth
+            rtspContainerParams.height = finalHeight
+            fragmentCameraBinding.smartGlassesRtspContainer.layoutParams = rtspContainerParams
             
             // Update OverlayView
             val overlayParams = fragmentCameraBinding.overlay.layoutParams
@@ -694,7 +736,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         fragmentCameraBinding.smartGlassesView.setImageBitmap(null)
         fragmentCameraBinding.smartGlassesView.visibility = View.GONE
         fragmentCameraBinding.smartGlassesH264View.visibility = View.GONE
-        fragmentCameraBinding.smartGlassesRtspView.visibility = View.GONE
+        fragmentCameraBinding.smartGlassesRtspContainer.visibility = View.GONE
         fragmentCameraBinding.btnMirrorCamera.visibility = View.GONE
         
         // 3. Rebind local camera
@@ -1026,6 +1068,8 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         resultBundle: HandLandmarkerHelper.ResultBundle
     ) {
         isProcessingFrame.set(false)
+        triggerInference() // Pull next frame immediately if ready
+        
         updateFpsCounter(mpFpsQueue, fragmentCameraBinding.textMediapipeFps, "MP FPS")
         activity?.runOnUiThread {
             if (_fragmentCameraBinding != null) {
@@ -1072,6 +1116,8 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
 
     override fun onError(error: String, errorCode: Int) {
         isProcessingFrame.set(false)
+        triggerInference() // Pull next frame immediately if ready
+        
         activity?.runOnUiThread {
             Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
             if (errorCode == HandLandmarkerHelper.GPU_ERROR) {

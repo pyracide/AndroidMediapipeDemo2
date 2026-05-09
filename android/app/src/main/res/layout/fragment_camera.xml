@@ -48,14 +48,20 @@
         app:layout_constraintTop_toTopOf="@id/view_finder"
         app:layout_constraintBottom_toBottomOf="@id/view_finder"/>
 
-    <!-- Smart Glasses H.264 RTSP View -->
-    <com.alexvas.rtsp.widget.RtspSurfaceView
-        android:id="@+id/smart_glasses_rtsp_view"
+    <!-- Smart Glasses H.264 RTSP View Container (for hardware transforms) -->
+    <FrameLayout
+        android:id="@+id/smart_glasses_rtsp_container"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:visibility="gone"
         app:layout_constraintTop_toTopOf="@id/view_finder"
-        app:layout_constraintBottom_toBottomOf="@id/view_finder"/>
+        app:layout_constraintBottom_toBottomOf="@id/view_finder">
+        
+        <com.alexvas.rtsp.widget.RtspSurfaceView
+            android:id="@+id/smart_glasses_rtsp_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+    </FrameLayout>
 
     <com.google.mediapipe.examples.handlandmarker.OverlayView
         android:id="@+id/overlay"
@@ -153,6 +159,7 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:padding="8dp"
+        android:layout_marginTop="48dp"
         app:layout_constraintTop_toTopOf="parent">
 
         <Button
