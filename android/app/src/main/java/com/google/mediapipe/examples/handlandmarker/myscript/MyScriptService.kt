@@ -24,6 +24,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
+import java.text.Normalizer
 import java.util.concurrent.atomic.AtomicBoolean
 
 // --- Data Models (Moved here to ensure compilation) ---
@@ -140,6 +141,11 @@ class MyScriptService(private val context: Context, private val listener: Recogn
             llmLoaded = loaded
             listener.onLlmStatus(if (loaded) "LLM: loaded" else "LLM: load failed")
         }
+    }
+
+    fun setLlmModelIndex(index: Int) {
+        llmLoaded = false
+        llmEngine.setModelFileName(LlmEngine.modelFileNameForIndex(index))
     }
 
     fun undoLastWord(): Boolean {
@@ -407,12 +413,15 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                         }
                         DecoderMode.LLM -> {
                             val candidateList = sequenceToEvaluate.lastOrNull() ?: emptyList()
+                            val llmCandidates = candidateList.map { normalizeLlmInput(it) }
                             if (candidateList.isEmpty()) {
                                 finalFallback
                             } else {
-                                val prompt = llmContextWords.joinToString(" ").trim()
+                                val rawPrompt = llmContextWords.joinToString(" ")
+                                val prompt = normalizeLlmInput(rawPrompt)
                                 val startTime = System.currentTimeMillis()
                                 var llmScores: FloatArray? = null
+                                var llmTokenCounts: IntArray = IntArray(0)
                                 var timedOut = false
 
                                 if (!llmLoaded) {
@@ -423,8 +432,9 @@ class MyScriptService(private val context: Context, private val listener: Recogn
 
                                 try {
                                     llmScores = withTimeout(llmTimeoutMs) {
-                                        llmEngine.rankCandidates(prompt, candidateList)
+                                        llmEngine.rankCandidates(prompt, llmCandidates)
                                     }
+                                    llmTokenCounts = llmEngine.getLastTokenCounts()
                                 } catch (e: TimeoutCancellationException) {
                                     timedOut = true
                                     llmEngine.cancelInference()
@@ -462,16 +472,23 @@ class MyScriptService(private val context: Context, private val listener: Recogn
 
                                     val debugBuilder = StringBuilder()
                                     if (isDebugEnabled) {
+                                        val rawContextLine = if (rawPrompt.isBlank()) "<empty>" else rawPrompt
                                         val contextLine = if (prompt.isBlank()) "<empty>" else prompt
-                                        debugBuilder.append("Context: ${contextLine}\n")
-                                        debugBuilder.append("Mode: LLM\n")
-                                        debugBuilder.append("Inference: ${inferenceMs} ms\n")
-                                        debugBuilder.append("JIIX candidates: ${candidateList.take(5).joinToString(", ")}\n")
-                                        val rawPairs = candidateList.mapIndexed { index, cand ->
+                                        debugBuilder.append("**Context (raw):** ${rawContextLine}\n")
+                                        debugBuilder.append("**Context (normalized):** ${contextLine}\n")
+                                        debugBuilder.append("**Mode:** LLM\n")
+                                        debugBuilder.append("**Inference:** ${inferenceMs} ms\n")
+                                        debugBuilder.append("**JIIX candidates:** ${candidateList.take(5).joinToString(", ")}\n")
+                                        val llmCandWithTok = llmCandidates.mapIndexed { index, cand ->
+                                            val tok = llmTokenCounts.getOrElse(index) { 0 }
+                                            if (tok > 0) "${cand} (${tok} tok)" else cand
+                                        }
+                                        debugBuilder.append("**LLM candidates:** ${llmCandWithTok.take(5).joinToString(", ")}\n")
+                                        val rawPairs = llmCandidates.mapIndexed { index, cand ->
                                             val raw = llmScores.getOrElse(index) { -1e9f }
                                             "${cand}=${String.format("%.4f", raw)}"
                                         }
-                                        debugBuilder.append("LLM raw logits: ${rawPairs.joinToString(", ")}\n")
+                                        debugBuilder.append("**LLM raw logits:** ${rawPairs.joinToString(", ")}\n")
                                     }
 
                                     candidateList.forEachIndexed { index, cand ->
@@ -486,10 +503,13 @@ class MyScriptService(private val context: Context, private val listener: Recogn
 
                                         if (isDebugEnabled) {
                                             val llmScore = llmScores.getOrElse(index) { -1e9f }
+                                            val tok = llmTokenCounts.getOrElse(index) { 0 }
+                                            val tokLabel = if (tok > 0) " (${tok} tok)" else ""
                                             debugBuilder.append(
                                                 String.format(
-                                                    "%s (JIIX R%d=%.2f | LLM R%d=%.4f | W=%.2f | Tot=%.2f)\n",
+                                                    "%s%s (JIIX R%d=%.2f | LLM R%d=%.4f | W=%.2f | Tot=%.2f)\n",
                                                     cand,
+                                                    tokLabel,
                                                     index + 1,
                                                     jiixScore,
                                                     llmRank + 1,
@@ -576,5 +596,17 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     
     companion object {
         private const val TAG = "MyScriptService"
+    }
+
+    private fun normalizeLlmInput(value: String): String {
+        if (value.isBlank()) return ""
+        val nfkc = Normalizer.normalize(value, Normalizer.Form.NFKC)
+        val noZeroWidth = nfkc
+            .replace("\u200B", "")
+            .replace("\u200C", "")
+            .replace("\u200D", "")
+            .replace("\uFEFF", "")
+            .replace("\u00A0", " ")
+        return noZeroWidth.replace(Regex("\\s+"), " ").trim()
     }
 }

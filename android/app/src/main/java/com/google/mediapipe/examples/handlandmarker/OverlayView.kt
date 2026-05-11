@@ -76,6 +76,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
     }
     var isTapGesturesEnabled = true
     private var isTapTriggered = false
+    var coordinateScale: Float = 1.0f
 
     interface OnStrokeListener {
         fun onStroke(points: List<MyScriptService.PointData>)
@@ -290,7 +291,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
             val y = avgY * imageHeight * scaleFactor + offsetY
             currentPath?.moveTo(x, y)
             currentStrokePoints.clear()
-            currentStrokePoints.add(MyScriptService.PointData(x, y, System.currentTimeMillis()))
+            currentStrokePoints.add(MyScriptService.PointData(x * coordinateScale, y * coordinateScale, System.currentTimeMillis()))
         } else if (isWriting && ratio > STOP_THRESHOLD) {
             isWriting = false
             Log.d("OverlayView", "UP")
@@ -312,7 +313,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
             val x = avgX * imageWidth * scaleFactor + offsetX
             val y = avgY * imageHeight * scaleFactor + offsetY
             currentPath?.lineTo(x, y)
-            currentStrokePoints.add(MyScriptService.PointData(x, y, System.currentTimeMillis()))
+            currentStrokePoints.add(MyScriptService.PointData(x * coordinateScale, y * coordinateScale, System.currentTimeMillis()))
         }
         
         // --- The "Clear" Gesture ---

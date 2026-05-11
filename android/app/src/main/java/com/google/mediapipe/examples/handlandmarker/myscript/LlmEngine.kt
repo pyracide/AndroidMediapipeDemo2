@@ -15,6 +15,7 @@ class LlmEngine(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     @Volatile private var loadDeferred: CompletableDeferred<Boolean>? = null
     @Volatile private var isLoaded = false
+    private val modelLock = Any()
 
     suspend fun ensureLoaded(): Boolean {
         if (isLoaded) return true
@@ -62,16 +63,36 @@ class LlmEngine(private val context: Context) {
         val ready = ensureLoaded()
         if (!ready) return FloatArray(candidates.size) { Float.NEGATIVE_INFINITY }
         return withContext(Dispatchers.Default) {
-            rankCandidatesNative(prompt, candidates.toTypedArray())
+            synchronized(modelLock) {
+                if (!isLoaded) {
+                    FloatArray(candidates.size) { Float.NEGATIVE_INFINITY }
+                } else {
+                    rankCandidatesNative(prompt, candidates.toTypedArray())
+                }
+            }
+        }
+    }
+
+    fun getLastTokenCounts(): IntArray {
+        return getLastTokenCountsNative()
+    }
+
+    private var modelFileName = MODEL_FILE_Q4
+
+    fun setModelFileName(newName: String) {
+        if (modelFileName == newName) return
+        synchronized(modelLock) {
+            modelFileName = newName
+            release()
         }
     }
 
     private fun loadModelInternal(): Boolean {
-        val modelFile = File(context.filesDir, MODEL_FILE_NAME)
+        val modelFile = File(context.filesDir, modelFileName)
         if (!modelFile.exists()) {
-            val copied = copyAsset(MODEL_FILE_NAME, modelFile)
+            val copied = copyAsset(modelFileName, modelFile)
             if (!copied) {
-                Log.e(TAG, "Failed to copy model asset: $MODEL_FILE_NAME")
+                Log.e(TAG, "Failed to copy model asset: $modelFileName")
                 return false
             }
         }
@@ -99,14 +120,20 @@ class LlmEngine(private val context: Context) {
 
     private external fun loadModel(modelPath: String, numThreads: Int): Boolean
     private external fun rankCandidatesNative(prompt: String, candidates: Array<String>): FloatArray
+    private external fun getLastTokenCountsNative(): IntArray
     private external fun resetNativeContext()
     private external fun cancelNativeInference()
     private external fun freeModel()
 
     companion object {
         private const val TAG = "LlmEngine"
-        private const val MODEL_FILE_NAME = "SmolLM2-360M.Q4_0.gguf"
+        private const val MODEL_FILE_Q4 = "SmolLM2-360M.Q4_0.gguf"
+        private const val MODEL_FILE_Q8 = "SmolLM2-360M.Q8_0.gguf"
         private const val NUM_THREADS = 4
+
+        fun modelFileNameForIndex(index: Int): String {
+            return if (index == 1) MODEL_FILE_Q8 else MODEL_FILE_Q4
+        }
 
         init {
             System.loadLibrary("llm")

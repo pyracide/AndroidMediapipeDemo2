@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <mutex>
 #include "llama.cpp/include/llama.h"
 #include "llama.cpp/common/common.h"
@@ -19,6 +20,7 @@ static llama_batch batch;
 static std::vector<llama_token> last_prompt_tokens;
 static std::atomic<bool> cancel_flag(false);
 static std::mutex llama_mutex;
+static std::vector<int> last_token_counts;
 
 static float get_log_prob(const float* logits, int vocab_size, llama_token token) {
     float max_logit = -1e9f;
@@ -109,6 +111,7 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandida
     const jsize num_candidates = env->GetArrayLength(candidatesArray);
     jfloatArray result = env->NewFloatArray(num_candidates);
     std::vector<float> scores(num_candidates, -1e9f);
+    last_token_counts.assign(num_candidates, 0);
 
     if (model == nullptr || ctx == nullptr) {
         env->SetFloatArrayRegion(result, 0, num_candidates, scores.data());
@@ -169,6 +172,8 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandida
     last_prompt_tokens = prompt_tokens;
 
     float * logits = llama_get_logits_ith(ctx, -1);
+    std::vector<float> prompt_logits(vocab_size);
+    std::memcpy(prompt_logits.data(), logits, sizeof(float) * vocab_size);
     const bool use_sequence_scoring = true;
 
     for (jsize i = 0; i < num_candidates; i++) {
@@ -187,6 +192,7 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandida
 
         std::vector<std::string> variants = {cand, " " + cand};
         float best_score = -1e9f;
+        int best_token_count = 0;
 
         for (const std::string& variant : variants) {
             std::vector<llama_token> c_toks = tokenize_candidate(variant);
@@ -196,9 +202,9 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandida
 
             float score = 0.0f;
             if (!use_sequence_scoring) {
-                score = logits[c_toks[0]];
+                score = prompt_logits[c_toks[0]];
             } else {
-                score = get_log_prob(logits, vocab_size, c_toks[0]);
+                score = get_log_prob(prompt_logits.data(), vocab_size, c_toks[0]);
                 if (c_toks.size() > 1) {
                     const int seq_id = 1;
                     llama_memory_seq_rm(llama_get_memory(ctx), seq_id, 0, -1);
@@ -230,10 +236,12 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandida
 
             if (score > best_score) {
                 best_score = score;
+                best_token_count = static_cast<int>(c_toks.size());
             }
         }
 
         scores[i] = best_score;
+        last_token_counts[i] = best_token_count;
     }
 
     env->SetFloatArrayRegion(result, 0, num_candidates, scores.data());
@@ -254,6 +262,16 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_resetNative
 extern "C" JNIEXPORT void JNICALL
 Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_cancelNativeInference(JNIEnv *env, jobject /* this */) {
     cancel_flag.store(true);
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_getLastTokenCountsNative(JNIEnv *env, jobject /* this */) {
+    std::lock_guard<std::mutex> lock(llama_mutex);
+    jintArray result = env->NewIntArray(static_cast<jsize>(last_token_counts.size()));
+    if (!last_token_counts.empty()) {
+        env->SetIntArrayRegion(result, 0, static_cast<jsize>(last_token_counts.size()), last_token_counts.data());
+    }
+    return result;
 }
 
 extern "C" JNIEXPORT void JNICALL

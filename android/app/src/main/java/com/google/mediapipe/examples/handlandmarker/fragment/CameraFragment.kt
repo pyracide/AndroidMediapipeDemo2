@@ -118,6 +118,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private var isDecoderDebugEnabled = false
     private var decoderMode = MyScriptService.DecoderMode.LLM
     private var llmTimeoutMs = 1000L
+    private var llmModelIndex = 0
     private var scraperTargetHeight = 720
     
     private val camFpsQueue = java.util.ArrayDeque<Long>()
@@ -315,6 +316,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         myScriptService?.decoderMode = decoderMode
         myScriptService?.setDebugMode(isDecoderDebugEnabled)
         myScriptService?.llmTimeoutMs = llmTimeoutMs
+        myScriptService?.setLlmModelIndex(llmModelIndex)
         myScriptService?.preloadLlm()
         
         fragmentCameraBinding.overlay.strokeListener = object : OverlayView.OnStrokeListener {
@@ -1060,6 +1062,25 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 }
             }
 
+        bottomSheetBinding!!.spinnerLlmModel.setSelection(llmModelIndex, false)
+        bottomSheetBinding!!.spinnerLlmModel.onItemSelectedListener =
+            object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    p0: AdapterView<*>?, p1: View?, p2: Int, p3: Long
+                ) {
+                    llmModelIndex = p2
+                    myScriptService?.setLlmModelIndex(p2)
+                    if (decoderMode == MyScriptService.DecoderMode.LLM) {
+                        myScriptService?.preloadLlm()
+                    }
+                    updateControlsUi()
+                }
+
+                override fun onNothingSelected(p0: AdapterView<*>?) {
+                    /* no op */
+                }
+            }
+
         // When clicked, change the underlying hardware used for inference.
         // Current options are CPU and GPU
         bottomSheetBinding!!.spinnerDelegate.setSelection(
@@ -1113,6 +1134,17 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         bottomSheetBinding!!.tapGesturesSwitch.setOnCheckedChangeListener { _, isChecked ->
             fragmentCameraBinding.overlay.isTapGesturesEnabled = isChecked
         }
+        
+        // Coordinate Scale buttons
+        bottomSheetBinding!!.textScaleValue.text = String.format(java.util.Locale.US, "%.2f", fragmentCameraBinding.overlay.coordinateScale)
+        bottomSheetBinding!!.btnScalePlus.setOnClickListener {
+            fragmentCameraBinding.overlay.coordinateScale += 0.25f
+            bottomSheetBinding!!.textScaleValue.text = String.format(java.util.Locale.US, "%.2f", fragmentCameraBinding.overlay.coordinateScale)
+        }
+        bottomSheetBinding!!.btnScaleMinus.setOnClickListener {
+            fragmentCameraBinding.overlay.coordinateScale = (fragmentCameraBinding.overlay.coordinateScale - 0.25f).coerceAtLeast(0.25f)
+            bottomSheetBinding!!.textScaleValue.text = String.format(java.util.Locale.US, "%.2f", fragmentCameraBinding.overlay.coordinateScale)
+        }
     }
 
     private fun getDecoderModeIndex(): Int {
@@ -1152,6 +1184,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         bottomSheetBinding!!.ngramWeightValue.text = String.format(Locale.US, "%.1f", ngWeight)
         bottomSheetBinding!!.ngramDebugSwitch.isChecked = isDecoderDebugEnabled
         bottomSheetBinding!!.spinnerRecognitionMode.setSelection(getDecoderModeIndex(), false)
+        bottomSheetBinding!!.spinnerLlmModel.setSelection(llmModelIndex, false)
 
         val isNgramMode = decoderMode == MyScriptService.DecoderMode.NGRAM
         bottomSheetBinding!!.ngramWeightRow.visibility = if (isNgramMode) View.VISIBLE else View.GONE
@@ -1159,6 +1192,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         val isLlmMode = decoderMode == MyScriptService.DecoderMode.LLM
         bottomSheetBinding!!.llmTimeoutRow.visibility = if (isLlmMode) View.VISIBLE else View.GONE
         bottomSheetBinding!!.llmTimeoutValue.text = String.format(Locale.US, "%.1f", llmTimeoutMs / 1000f)
+        bottomSheetBinding!!.llmModelRow.visibility = if (isLlmMode) View.VISIBLE else View.GONE
 
         fragmentCameraBinding.btnResetLlmContext.visibility =
             if (isLlmMode) View.VISIBLE else View.GONE

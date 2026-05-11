@@ -52,6 +52,12 @@
         <item>None</item>
     </string-array>
 
+    <string name="label_llm_model">LLM Model</string>
+    <string-array name="llm_model_titles">
+        <item>SmolLM2 360M Q4</item>
+        <item>SmolLM2 360M Q8</item>
+    </string-array>
+
     <string-array name="delegate_spinner_titles">
         <item>CPU</item>
         <item>GPU</item>
@@ -68,4 +74,5 @@
 
     <string name="label_jitter_buffer">Smooth Motion (Jitter Buffer)</string>
     <string name="label_tap_gestures">Tap Gestures</string>
+    <string name="label_coord_scale">Coordinate Scale</string>
 </resources>
