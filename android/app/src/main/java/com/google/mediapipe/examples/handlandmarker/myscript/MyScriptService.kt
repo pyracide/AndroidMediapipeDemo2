@@ -91,6 +91,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     private val languageModel by lazy { TrigramLanguageModel(context) }
     private val llmEngine by lazy { LlmEngine(context) }
     private val llmContextWords = mutableListOf<String>()
+    private val undoBlocklist = mutableSetOf<String>()
     private var llmLoaded = false
     private var canUndo = false
     
@@ -130,6 +131,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
 
     fun resetLlmContext() {
         llmContextWords.clear()
+        undoBlocklist.clear()
         canUndo = false
         llmEngine.resetContext()
     }
@@ -150,7 +152,8 @@ class MyScriptService(private val context: Context, private val listener: Recogn
 
     fun undoLastWord(): Boolean {
         if (!canUndo || llmContextWords.isEmpty()) return false
-        llmContextWords.removeAt(llmContextWords.size - 1)
+        val removed = llmContextWords.removeAt(llmContextWords.size - 1)
+        undoBlocklist.add(removed.trim().lowercase())
         canUndo = false
         return true
     }
@@ -413,12 +416,14 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                         }
                         DecoderMode.LLM -> {
                             val candidateList = sequenceToEvaluate.lastOrNull() ?: emptyList()
-                            val llmCandidates = candidateList.map { normalizeLlmInput(it) }
-                            if (candidateList.isEmpty()) {
+                            // Match demo app exactly: trim and filter empty
+                            val llmCandidates = candidateList.map { it.trim() }.filter { it.isNotEmpty() }
+                            
+                            if (llmCandidates.isEmpty()) {
                                 finalFallback
                             } else {
                                 val rawPrompt = llmContextWords.joinToString(" ")
-                                val prompt = normalizeLlmInput(rawPrompt)
+                                val prompt = rawPrompt.trim()
                                 val startTime = System.currentTimeMillis()
                                 var llmScores: FloatArray? = null
                                 var llmTokenCounts: IntArray = IntArray(0)
@@ -430,14 +435,18 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                     }
                                 }
 
-                                try {
-                                    llmScores = withTimeout(llmTimeoutMs) {
-                                        llmEngine.rankCandidates(prompt, llmCandidates)
+                                if (prompt.isBlank()) {
+                                    timedOut = true // Force fallback for empty context
+                                } else {
+                                    try {
+                                        llmScores = withTimeout(llmTimeoutMs) {
+                                            llmEngine.rankCandidates(prompt, llmCandidates)
+                                        }
+                                        llmTokenCounts = llmEngine.getLastTokenCounts()
+                                    } catch (e: TimeoutCancellationException) {
+                                        timedOut = true
+                                        llmEngine.cancelInference()
                                     }
-                                    llmTokenCounts = llmEngine.getLastTokenCounts()
-                                } catch (e: TimeoutCancellationException) {
-                                    timedOut = true
-                                    llmEngine.cancelInference()
                                 }
 
                                 if (!llmLoaded && llmScores != null && llmScores.isNotEmpty()) {
@@ -455,10 +464,14 @@ class MyScriptService(private val context: Context, private val listener: Recogn
 
                                 if (timedOut || llmScores == null || llmScores.isEmpty()) {
                                     if (isDebugEnabled) {
-                                        finalDebugText = "LLM timeout (>1000 ms). Fallback to JIIX top.\n" +
+                                        finalDebugText = "LLM timeout/fallback. Fallback to JIIX top.\n" +
                                             "Inference: ${inferenceMs} ms"
                                     }
-                                    finalFallback
+                                    val fallbackCandidate = llmCandidates.firstOrNull { 
+                                        !undoBlocklist.contains(it.trim().lowercase()) 
+                                    } ?: finalFallback
+                                    undoBlocklist.clear()
+                                    fallbackCandidate
                                 } else {
                                     val llmWeights = listOf(0.88f, 0.66f, 0.44f, 0.22f, 0.0f)
                                     val llmOrder = llmScores.indices.sortedByDescending { llmScores[it] }
@@ -467,7 +480,38 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                         llmRanks[idx] = rank
                                     }
 
-                                    var bestIndex = 0
+                                    // --- TUNABLE SCALING SYSTEM ---
+                                    // You can tune these values below:
+                                    val enableLlmScaling = true
+                                    val diffUpperThreshold = 3.0f // Above this diff, apply full LLM weight
+                                    val diffLowerThreshold = 1.0f // Below this diff, apply minimum LLM scaling
+                                    val scaleMax = 1.0f           // Maximum multiplier for LLM weight
+                                    val scaleMin = 0.33f          // Minimum multiplier for LLM weight
+
+                                    var maxLlm = -1e9f
+                                    var minLlm = 1e9f
+                                    llmScores.forEach { score ->
+                                        if (score > maxLlm) maxLlm = score
+                                        if (score > -1e8f && score < minLlm) minLlm = score // ignore invalid -1e9f scores
+                                    }
+                                    if (minLlm == 1e9f) minLlm = maxLlm // fallback
+
+                                    val diff = maxLlm - minLlm
+                                    var llmScale = 1.0f
+
+                                    if (enableLlmScaling && llmScores.isNotEmpty()) {
+                                        llmScale = when {
+                                            diff >= diffUpperThreshold -> scaleMax
+                                            diff <= diffLowerThreshold -> scaleMin
+                                            else -> {
+                                                val fraction = (diff - diffLowerThreshold) / (diffUpperThreshold - diffLowerThreshold)
+                                                scaleMin + fraction * (scaleMax - scaleMin)
+                                            }
+                                        }
+                                    }
+                                    // ------------------------------
+
+                                    var bestIndex = -1
                                     var bestScore = -1e9f
 
                                     val debugBuilder = StringBuilder()
@@ -478,6 +522,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                         debugBuilder.append("**Context (normalized):** ${contextLine}\n")
                                         debugBuilder.append("**Mode:** LLM\n")
                                         debugBuilder.append("**Inference:** ${inferenceMs} ms\n")
+                                        debugBuilder.append("**LLM Scale:** ${String.format("%.2f", llmScale)}x (Spread: ${String.format("%.2f", diff)})\n")
                                         debugBuilder.append("**JIIX candidates:** ${candidateList.take(5).joinToString(", ")}\n")
                                         val llmCandWithTok = llmCandidates.mapIndexed { index, cand ->
                                             val tok = llmTokenCounts.getOrElse(index) { 0 }
@@ -491,11 +536,18 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                         debugBuilder.append("**LLM raw logits:** ${rawPairs.joinToString(", ")}\n")
                                     }
 
-                                    candidateList.forEachIndexed { index, cand ->
+                                    llmCandidates.forEachIndexed { index, cand ->
+                                        val candLow = cand.trim().lowercase()
+                                        if (undoBlocklist.contains(candLow)) {
+                                            return@forEachIndexed
+                                        }
+
                                         val jiixScore = languageModel.getJiixScore(index)
                                         val llmRank = llmRanks.getOrElse(index) { llmScores.size }
                                         val llmWeight = llmWeights.getOrElse(llmRank) { 0f }
-                                        val total = jiixScore + llmWeight
+                                        val adjustedLlmWeight = llmWeight * llmScale
+                                        val total = jiixScore + adjustedLlmWeight
+                                        
                                         if (total > bestScore) {
                                             bestScore = total
                                             bestIndex = index
@@ -507,7 +559,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                             val tokLabel = if (tok > 0) " (${tok} tok)" else ""
                                             debugBuilder.append(
                                                 String.format(
-                                                    "%s%s (JIIX R%d=%.2f | LLM R%d=%.4f | W=%.2f | Tot=%.2f)\n",
+                                                    "%s%s (JIIX R%d=%.2f | LLM R%d=%.4f | W=%.2f*%.2f | Tot=%.2f)\n",
                                                     cand,
                                                     tokLabel,
                                                     index + 1,
@@ -515,6 +567,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                                     llmRank + 1,
                                                     llmScore,
                                                     llmWeight,
+                                                    llmScale,
                                                     total
                                                 )
                                             )
@@ -525,7 +578,16 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                         finalDebugText = debugBuilder.toString().trimEnd()
                                     }
 
-                                    candidateList[bestIndex]
+                                    if (bestIndex == -1) {
+                                        val fallbackCandidate = llmCandidates.firstOrNull { 
+                                            !undoBlocklist.contains(it.trim().lowercase()) 
+                                        } ?: llmCandidates.firstOrNull() ?: finalFallback
+                                        undoBlocklist.clear()
+                                        fallbackCandidate
+                                    } else {
+                                        undoBlocklist.clear()
+                                        llmCandidates[bestIndex]
+                                    }
                                 }
                             }
                         }
@@ -596,17 +658,5 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     
     companion object {
         private const val TAG = "MyScriptService"
-    }
-
-    private fun normalizeLlmInput(value: String): String {
-        if (value.isBlank()) return ""
-        val nfkc = Normalizer.normalize(value, Normalizer.Form.NFKC)
-        val noZeroWidth = nfkc
-            .replace("\u200B", "")
-            .replace("\u200C", "")
-            .replace("\u200D", "")
-            .replace("\uFEFF", "")
-            .replace("\u00A0", " ")
-        return noZeroWidth.replace(Regex("\\s+"), " ").trim()
     }
 }

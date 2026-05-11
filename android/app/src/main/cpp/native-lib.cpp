@@ -34,41 +34,6 @@ static float get_log_prob(const float* logits, int vocab_size, llama_token token
     return (logits[token] - max_logit) - logf(sum_exp);
 }
 
-static std::vector<llama_token> tokenize_prompt(const std::string &text) {
-    std::vector<llama_token> tokens;
-    tokens.resize(text.length() + 2);
-    const llama_vocab* vocab = llama_model_get_vocab(model);
-    const int vocab_size = llama_vocab_n_tokens(vocab);
-    int n_tokens = llama_tokenize(vocab, text.c_str(), text.length(), tokens.data(), tokens.size(), true, false);
-    if (n_tokens < 0) {
-        tokens.resize(-n_tokens);
-        n_tokens = llama_tokenize(vocab, text.c_str(), text.length(), tokens.data(), tokens.size(), true, false);
-    }
-    if (n_tokens > 0) {
-        tokens.resize(n_tokens);
-    } else {
-        tokens.clear();
-    }
-    return tokens;
-}
-
-static std::vector<llama_token> tokenize_candidate(const std::string &text) {
-    std::vector<llama_token> tokens;
-    tokens.resize(text.length() + 2);
-    const llama_vocab* vocab = llama_model_get_vocab(model);
-    int n_tokens = llama_tokenize(vocab, text.c_str(), text.length(), tokens.data(), tokens.size(), false, false);
-    if (n_tokens < 0) {
-        tokens.resize(-n_tokens);
-        n_tokens = llama_tokenize(vocab, text.c_str(), text.length(), tokens.data(), tokens.size(), false, false);
-    }
-    if (n_tokens > 0) {
-        tokens.resize(n_tokens);
-    } else {
-        tokens.clear();
-    }
-    return tokens;
-}
-
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_loadModel(JNIEnv *env, jobject /* this */, jstring modelPath, jint numThreads) {
     std::lock_guard<std::mutex> lock(llama_mutex);
@@ -99,14 +64,15 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_loadModel(J
         return JNI_FALSE;
     }
 
-    batch = llama_batch_init(512, 0, 1);
+    // Initialize batch with capacity for full context size to prevent out-of-bounds
+    batch = llama_batch_init(ctx_params.n_ctx, 0, 1);
     cancel_flag.store(false);
     LOGI("Model loaded successfully");
     return JNI_TRUE;
 }
 
 extern "C" JNIEXPORT jfloatArray JNICALL
-Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandidatesNative(JNIEnv *env, jobject /* this */, jstring promptStr, jobjectArray candidatesArray) {
+Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandidatesNative(JNIEnv *env, jobject /* this */, jstring promptStr, jobjectArray candidatesArray, jboolean useSequenceScoring) {
     std::lock_guard<std::mutex> lock(llama_mutex);
     const jsize num_candidates = env->GetArrayLength(candidatesArray);
     jfloatArray result = env->NewFloatArray(num_candidates);
@@ -124,9 +90,30 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandida
     std::string prompt(prompt_c ? prompt_c : "");
     env->ReleaseStringUTFChars(promptStr, prompt_c);
 
-    std::vector<llama_token> prompt_tokens = tokenize_prompt(prompt);
+    // EXACTLY AS IN DEMO APP
     const llama_vocab* vocab = llama_model_get_vocab(model);
-    const int vocab_size = llama_vocab_n_tokens(vocab);
+    std::vector<llama_token> prompt_tokens;
+    prompt_tokens.resize(prompt.length() + 2);
+    int n_tokens = llama_tokenize(vocab, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), true, false);
+    
+    if (n_tokens < 0) {
+        prompt_tokens.resize(-n_tokens);
+        n_tokens = llama_tokenize(vocab, prompt.c_str(), prompt.length(), prompt_tokens.data(), prompt_tokens.size(), true, false);
+    }
+    if (n_tokens > 0) {
+        prompt_tokens.resize(n_tokens);
+    } else {
+        prompt_tokens.clear();
+    }
+
+    if (prompt_tokens.size() > 1024) { // Prevent exceeding context/batch limit
+        prompt_tokens.resize(1024);
+    }
+
+    if (prompt_tokens.empty()) {
+        // First word evaluation (empty context) needs at least BOS logic to generate logits
+        prompt_tokens.push_back(llama_vocab_bos(vocab));
+    }
 
     size_t common_prefix_len = 0;
     while (common_prefix_len < std::min(prompt_tokens.size(), last_prompt_tokens.size()) &&
@@ -135,7 +122,7 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandida
     }
 
     if (common_prefix_len == prompt_tokens.size() && common_prefix_len > 0) {
-        common_prefix_len--;
+        common_prefix_len--; // Force re-evaluation of at least the last token to get its logits
     }
 
     if (common_prefix_len < last_prompt_tokens.size()) {
@@ -158,12 +145,10 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandida
 
     if (batch.n_tokens > 0) {
         batch.logits[batch.n_tokens - 1] = true;
-        if (llama_decode(ctx, batch) != 0) {
-            LOGE("Failed to evaluate prompt");
-            env->SetFloatArrayRegion(result, 0, num_candidates, scores.data());
-            return result;
-        }
-    } else {
+    }
+    
+    if (batch.n_tokens > 0 && llama_decode(ctx, batch) != 0) {
+        LOGE("Failed to evaluate prompt");
         env->SetFloatArrayRegion(result, 0, num_candidates, scores.data());
         return result;
     }
@@ -171,57 +156,58 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandida
     batch.n_tokens = 0;
     last_prompt_tokens = prompt_tokens;
 
+    // EXACTLY AS IN DEMO APP, DO NOT COPY LOGITS
     float * logits = llama_get_logits_ith(ctx, -1);
-    std::vector<float> prompt_logits(vocab_size);
-    std::memcpy(prompt_logits.data(), logits, sizeof(float) * vocab_size);
-    const bool use_sequence_scoring = true;
+    int vocab_size = llama_vocab_n_tokens(vocab);
 
     for (jsize i = 0; i < num_candidates; i++) {
-        if (cancel_flag.load()) {
-            break;
-        }
+        if (cancel_flag.load()) break;
+
         jstring cand_jstr = (jstring) env->GetObjectArrayElement(candidatesArray, i);
         const char *cand_c = env->GetStringUTFChars(cand_jstr, nullptr);
         std::string cand(cand_c ? cand_c : "");
         env->ReleaseStringUTFChars(cand_jstr, cand_c);
-
-        if (cand.empty()) {
-            scores[i] = -1e9f;
-            continue;
-        }
 
         std::vector<std::string> variants = {cand, " " + cand};
         float best_score = -1e9f;
         int best_token_count = 0;
 
         for (const std::string& variant : variants) {
-            std::vector<llama_token> c_toks = tokenize_candidate(variant);
-            if (c_toks.empty()) {
-                continue;
+            std::vector<llama_token> c_toks(variant.length() + 2);
+            int c_tokens = llama_tokenize(vocab, variant.c_str(), variant.length(), c_toks.data(), c_toks.size(), false, false);
+            if (c_tokens < 0) {
+                c_toks.resize(-c_tokens);
+                c_tokens = llama_tokenize(vocab, variant.c_str(), variant.length(), c_toks.data(), c_toks.size(), false, false);
             }
+            if (c_tokens <= 0) continue;
+            c_toks.resize(c_tokens);
 
             float score = 0.0f;
-            if (!use_sequence_scoring) {
-                score = prompt_logits[c_toks[0]];
+            
+            if (!useSequenceScoring) {
+                // === RAW LOGIT MODE ===
+                score = logits[c_toks[0]];
             } else {
-                score = get_log_prob(prompt_logits.data(), vocab_size, c_toks[0]);
+                // === SEQUENCE SCORING MODE ===
+                score = get_log_prob(logits, vocab_size, c_toks[0]);
+                
                 if (c_toks.size() > 1) {
-                    const int seq_id = 1;
+                    int seq_id = 1;
                     llama_memory_seq_rm(llama_get_memory(ctx), seq_id, 0, -1);
                     llama_memory_seq_cp(llama_get_memory(ctx), 0, seq_id, 0, -1);
-
+                    
                     for (size_t t = 0; t < c_toks.size() - 1; t++) {
-                        if (cancel_flag.load()) {
-                            break;
-                        }
+                        if (cancel_flag.load()) break;
+                        
                         batch.n_tokens = 0;
                         batch.token[0] = c_toks[t];
+                        // EXACTLY AS DEMO
                         batch.pos[0] = prompt_tokens.size() + t;
                         batch.seq_id[0][0] = seq_id;
                         batch.n_seq_id[0] = 1;
                         batch.logits[0] = true;
                         batch.n_tokens = 1;
-
+                        
                         if (llama_decode(ctx, batch) != 0) {
                             LOGE("Failed to decode token %zu of candidate '%s'", t, variant.c_str());
                             break;
@@ -229,11 +215,11 @@ Java_com_google_mediapipe_examples_handlandmarker_myscript_LlmEngine_rankCandida
                         float* next_logits = llama_get_logits_ith(ctx, -1);
                         score += get_log_prob(next_logits, vocab_size, c_toks[t + 1]);
                     }
-
+                    
                     llama_memory_seq_rm(llama_get_memory(ctx), seq_id, 0, -1);
                 }
             }
-
+            
             if (score > best_score) {
                 best_score = score;
                 best_token_count = static_cast<int>(c_toks.size());

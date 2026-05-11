@@ -67,7 +67,7 @@ class LlmEngine(private val context: Context) {
                 if (!isLoaded) {
                     FloatArray(candidates.size) { Float.NEGATIVE_INFINITY }
                 } else {
-                    rankCandidatesNative(prompt, candidates.toTypedArray())
+                    rankCandidatesNative(prompt, candidates.toTypedArray(), true) // Using sequence scoring by default
                 }
             }
         }
@@ -119,7 +119,7 @@ class LlmEngine(private val context: Context) {
     }
 
     private external fun loadModel(modelPath: String, numThreads: Int): Boolean
-    private external fun rankCandidatesNative(prompt: String, candidates: Array<String>): FloatArray
+    private external fun rankCandidatesNative(prompt: String, candidates: Array<String>, useSequenceScoring: Boolean): FloatArray
     private external fun getLastTokenCountsNative(): IntArray
     private external fun resetNativeContext()
     private external fun cancelNativeInference()

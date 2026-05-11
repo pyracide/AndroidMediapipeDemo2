@@ -334,6 +334,9 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                     tts?.speak("I mean", TextToSpeech.QUEUE_FLUSH, null, "DoublePinchUndo")
                 }
 
+                // Clear MyScript engine buffer
+                myScriptService?.clear()
+
                 // Silent Clear - visually remove dots 0.1s later
                 fragmentCameraBinding.overlay.postDelayed({
                     fragmentCameraBinding.overlay.clearDrawing()
@@ -341,6 +344,9 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 }, 100)
             }
             override fun onTriplePinch() {
+                // Clear MyScript engine buffer
+                myScriptService?.clear()
+
                 // Clear the canvas visually 0.1s later (no context change)
                 fragmentCameraBinding.overlay.postDelayed({
                     fragmentCameraBinding.overlay.clearDrawing()
