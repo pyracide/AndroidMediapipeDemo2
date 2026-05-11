@@ -20,7 +20,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -68,9 +70,16 @@ data class BoundingBox(
 
 class MyScriptService(private val context: Context, private val listener: RecognitionListener) {
 
+    enum class DecoderMode {
+        LLM,
+        NGRAM,
+        NONE
+    }
+
     interface RecognitionListener {
         fun onTextRecognized(text: String, debugText: String = "")
         fun onJiixReceived(items: List<Item>)
+        fun onLlmStatus(status: String) {}
     }
 
     private var engine: Engine? = null
@@ -79,6 +88,10 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     private var converter: DisplayMetricsConverter? = null
     private val scope = CoroutineScope(Dispatchers.Main + Job())
     private val languageModel by lazy { TrigramLanguageModel(context) }
+    private val llmEngine by lazy { LlmEngine(context) }
+    private val llmContextWords = mutableListOf<String>()
+    private var llmLoaded = false
+    private var canUndo = false
     
     private val enableEditorLogging = true
     private var isReady = false
@@ -104,12 +117,37 @@ class MyScriptService(private val context: Context, private val listener: Recogn
         languageModel.ngWeight = weight
     }
     
-    fun setNgDebugMode(enabled: Boolean) {
+    fun setDebugMode(enabled: Boolean) {
+        isDebugEnabled = enabled
         languageModel.isDebugMode = enabled
     }
     
-    var isNgramEnabled = true
+    var decoderMode = DecoderMode.LLM
     var oneWordOnly = true
+    private var isDebugEnabled = false
+    var llmTimeoutMs: Long = 1000L
+
+    fun resetLlmContext() {
+        llmContextWords.clear()
+        canUndo = false
+        llmEngine.resetContext()
+    }
+
+    fun preloadLlm() {
+        scope.launch {
+            listener.onLlmStatus("LLM: loading")
+            val loaded = llmEngine.ensureLoaded()
+            llmLoaded = loaded
+            listener.onLlmStatus(if (loaded) "LLM: loaded" else "LLM: load failed")
+        }
+    }
+
+    fun undoLastWord(): Boolean {
+        if (!canUndo || llmContextWords.isEmpty()) return false
+        llmContextWords.removeAt(llmContextWords.size - 1)
+        canUndo = false
+        return true
+    }
 
     private fun initializeEditor() {
         if (isInitializing.getAndSet(true)) {
@@ -355,19 +393,134 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                         fallbackText.toString().trim()
                     }
 
-                    val resultText = if (sequenceToEvaluate.isNotEmpty() && isNgramEnabled) {
-                        // Run the classical Tri-Gram Logic
-                        val decodeResult = languageModel.decodeOptimalSentence(sequenceToEvaluate)
-                        finalDebugText = decodeResult.debugInfo
-                        decodeResult.text
-                    } else {
-                        // Fallback completely to raw top-choice text
-                        finalFallback
+                    val resultText = when (decoderMode) {
+                        DecoderMode.NGRAM -> {
+                            if (sequenceToEvaluate.isNotEmpty()) {
+                                val decodeResult = languageModel.decodeOptimalSentence(sequenceToEvaluate)
+                                if (isDebugEnabled) {
+                                    finalDebugText = decodeResult.debugInfo
+                                }
+                                decodeResult.text
+                            } else {
+                                finalFallback
+                            }
+                        }
+                        DecoderMode.LLM -> {
+                            val candidateList = sequenceToEvaluate.lastOrNull() ?: emptyList()
+                            if (candidateList.isEmpty()) {
+                                finalFallback
+                            } else {
+                                val prompt = llmContextWords.joinToString(" ").trim()
+                                val startTime = System.currentTimeMillis()
+                                var llmScores: FloatArray? = null
+                                var timedOut = false
+
+                                if (!llmLoaded) {
+                                    withContext(Dispatchers.Main) {
+                                        listener.onLlmStatus("LLM: loading")
+                                    }
+                                }
+
+                                try {
+                                    llmScores = withTimeout(llmTimeoutMs) {
+                                        llmEngine.rankCandidates(prompt, candidateList)
+                                    }
+                                } catch (e: TimeoutCancellationException) {
+                                    timedOut = true
+                                    llmEngine.cancelInference()
+                                }
+
+                                if (!llmLoaded && llmScores != null && llmScores.isNotEmpty()) {
+                                    llmLoaded = true
+                                    withContext(Dispatchers.Main) {
+                                        listener.onLlmStatus("LLM: loaded")
+                                    }
+                                } else if (!llmLoaded && (llmScores == null || llmScores.isEmpty())) {
+                                    withContext(Dispatchers.Main) {
+                                        listener.onLlmStatus("LLM: load failed")
+                                    }
+                                }
+
+                                val inferenceMs = System.currentTimeMillis() - startTime
+
+                                if (timedOut || llmScores == null || llmScores.isEmpty()) {
+                                    if (isDebugEnabled) {
+                                        finalDebugText = "LLM timeout (>1000 ms). Fallback to JIIX top.\n" +
+                                            "Inference: ${inferenceMs} ms"
+                                    }
+                                    finalFallback
+                                } else {
+                                    val llmWeights = listOf(0.88f, 0.66f, 0.44f, 0.22f, 0.0f)
+                                    val llmOrder = llmScores.indices.sortedByDescending { llmScores[it] }
+                                    val llmRanks = IntArray(llmScores.size)
+                                    llmOrder.forEachIndexed { rank, idx ->
+                                        llmRanks[idx] = rank
+                                    }
+
+                                    var bestIndex = 0
+                                    var bestScore = -1e9f
+
+                                    val debugBuilder = StringBuilder()
+                                    if (isDebugEnabled) {
+                                        val contextLine = if (prompt.isBlank()) "<empty>" else prompt
+                                        debugBuilder.append("Context: ${contextLine}\n")
+                                        debugBuilder.append("Mode: LLM\n")
+                                        debugBuilder.append("Inference: ${inferenceMs} ms\n")
+                                        debugBuilder.append("JIIX candidates: ${candidateList.take(5).joinToString(", ")}\n")
+                                        val rawPairs = candidateList.mapIndexed { index, cand ->
+                                            val raw = llmScores.getOrElse(index) { -1e9f }
+                                            "${cand}=${String.format("%.4f", raw)}"
+                                        }
+                                        debugBuilder.append("LLM raw logits: ${rawPairs.joinToString(", ")}\n")
+                                    }
+
+                                    candidateList.forEachIndexed { index, cand ->
+                                        val jiixScore = languageModel.getJiixScore(index)
+                                        val llmRank = llmRanks.getOrElse(index) { llmScores.size }
+                                        val llmWeight = llmWeights.getOrElse(llmRank) { 0f }
+                                        val total = jiixScore + llmWeight
+                                        if (total > bestScore) {
+                                            bestScore = total
+                                            bestIndex = index
+                                        }
+
+                                        if (isDebugEnabled) {
+                                            val llmScore = llmScores.getOrElse(index) { -1e9f }
+                                            debugBuilder.append(
+                                                String.format(
+                                                    "%s (JIIX R%d=%.2f | LLM R%d=%.4f | W=%.2f | Tot=%.2f)\n",
+                                                    cand,
+                                                    index + 1,
+                                                    jiixScore,
+                                                    llmRank + 1,
+                                                    llmScore,
+                                                    llmWeight,
+                                                    total
+                                                )
+                                            )
+                                        }
+                                    }
+
+                                    if (isDebugEnabled) {
+                                        finalDebugText = debugBuilder.toString().trimEnd()
+                                    }
+
+                                    candidateList[bestIndex]
+                                }
+                            }
+                        }
+                        DecoderMode.NONE -> {
+                            finalFallback
+                        }
                     }
                     
-                    if (languageModel.isDebugMode) {
-                        val fullJiixExport = "RAW JIIX (Pre-Trim):\n" + textSequence.mapIndexed { i, cands -> "W${i+1}: " + cands.take(3).joinToString(", ") }.joinToString("\n")
-                        finalDebugText = fullJiixExport + "\n\n" + finalDebugText
+                    if (isDebugEnabled) {
+                        val fullJiixExport = "RAW JIIX (Pre-Trim):\n" + textSequence.mapIndexed { i, cands -> "W${i + 1}: " + cands.take(5).joinToString(", ") }.joinToString("\n")
+                        if (finalDebugText.isNotBlank()) {
+                            finalDebugText = fullJiixExport + "\n\n" + finalDebugText
+                        } else {
+                            finalDebugText = fullJiixExport
+                        }
                     }
                     
                     if (enableEditorLogging) {
@@ -384,6 +537,11 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                         
                         if (enableEditorLogging) Log.d("Editor Logging", "Result emitted. Clearing engine.")
                         offscreenEditor?.clear()
+                    }
+
+                    if (resultText.isNotBlank()) {
+                        llmContextWords.add(resultText.trim())
+                        canUndo = true
                     }
                 } else {
                     withContext(Dispatchers.Main) {
@@ -409,6 +567,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     }
     
     fun close() {
+        llmEngine.release()
         offscreenEditor?.close()
         contentPart?.close()
     }

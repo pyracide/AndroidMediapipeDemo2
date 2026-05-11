@@ -115,9 +115,9 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private var bottomSheetBinding: InfoBottomSheetBinding? = null
     
     private var ngWeight = 1.0f
-    private var isNgDebugEnabled = false
-    private var isNgramEnabled = true
-    private var wasHandPresent = false
+    private var isDecoderDebugEnabled = false
+    private var decoderMode = MyScriptService.DecoderMode.LLM
+    private var llmTimeoutMs = 1000L
     private var scraperTargetHeight = 720
     
     private val camFpsQueue = java.util.ArrayDeque<Long>()
@@ -291,7 +291,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             override fun onTextRecognized(text: String, debugText: String) {
                  activity?.runOnUiThread {
                      fragmentCameraBinding.textRecognitionResult.text = text
-                     if (isNgDebugEnabled && debugText.isNotEmpty()) {
+                     if (isDecoderDebugEnabled && debugText.isNotEmpty()) {
                          fragmentCameraBinding.textNgramDebug.text = debugText
                          fragmentCameraBinding.textNgramDebug.visibility = View.VISIBLE
                      } else {
@@ -312,6 +312,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             }
         })
         myScriptService?.setDisplayMetrics(resources.displayMetrics)
+        myScriptService?.decoderMode = decoderMode
+        myScriptService?.setDebugMode(isDecoderDebugEnabled)
+        myScriptService?.llmTimeoutMs = llmTimeoutMs
+        myScriptService?.preloadLlm()
         
         fragmentCameraBinding.overlay.strokeListener = object : OverlayView.OnStrokeListener {
             override fun onStroke(points: List<MyScriptService.PointData>) {
@@ -322,6 +326,12 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 myScriptService?.commitAndClear()
             }
             override fun onDoublePinch() {
+                // Undo last word from LLM context
+                val didUndo = myScriptService?.undoLastWord() == true
+                if (didUndo) {
+                    tts?.speak("I mean", TextToSpeech.QUEUE_FLUSH, null, "DoublePinchUndo")
+                }
+
                 // Silent Clear - visually remove dots 0.1s later
                 fragmentCameraBinding.overlay.postDelayed({
                     fragmentCameraBinding.overlay.clearDrawing()
@@ -329,10 +339,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 }, 100)
             }
             override fun onTriplePinch() {
-                // User indicated a wrong word
-                tts?.speak("I mean", TextToSpeech.QUEUE_FLUSH, null, "DoublePinchUndo")
-                
-                // Clear the canvas visually 0.1s later
+                // Clear the canvas visually 0.1s later (no context change)
                 fragmentCameraBinding.overlay.postDelayed({
                     fragmentCameraBinding.overlay.clearDrawing()
                     fragmentCameraBinding.overlay.invalidate()
@@ -412,6 +419,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 fragmentCameraBinding.textDebugCoords.visibility = View.VISIBLE
             }
             fragmentCameraBinding.overlay.isDrawingMode = isDrawingMode
+        }
+
+        fragmentCameraBinding.btnResetLlmContext.setOnClickListener {
+            myScriptService?.resetLlmContext()
+            Toast.makeText(requireContext(), "LLM context reset", Toast.LENGTH_SHORT).show()
         }
         
         fragmentCameraBinding.btnBlink.setOnClickListener {
@@ -998,22 +1010,55 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 updateControlsUi()
             }
         }
+
+        // LLM Timeout controls
+        bottomSheetBinding!!.llmTimeoutMinus.setOnClickListener {
+            if (llmTimeoutMs > 500L) {
+                llmTimeoutMs -= 100L
+                myScriptService?.llmTimeoutMs = llmTimeoutMs
+                updateControlsUi()
+            }
+        }
+
+        bottomSheetBinding!!.llmTimeoutPlus.setOnClickListener {
+            if (llmTimeoutMs < 5000L) {
+                llmTimeoutMs += 100L
+                myScriptService?.llmTimeoutMs = llmTimeoutMs
+                updateControlsUi()
+            }
+        }
         
         bottomSheetBinding!!.ngramDebugSwitch.setOnCheckedChangeListener { _, isChecked ->
-            isNgDebugEnabled = isChecked
-            myScriptService?.setNgDebugMode(isChecked)
+            isDecoderDebugEnabled = isChecked
+            myScriptService?.setDebugMode(isChecked)
             if (!isChecked) {
                 fragmentCameraBinding.textNgramDebug.visibility = View.GONE
             }
         }
-        
-        bottomSheetBinding!!.ngramEnableSwitch.setOnCheckedChangeListener { _, isChecked ->
-            isNgramEnabled = isChecked
-            myScriptService?.isNgramEnabled = isChecked
-            if (!isChecked) {
-                fragmentCameraBinding.textNgramDebug.visibility = View.GONE
+
+        bottomSheetBinding!!.spinnerRecognitionMode.setSelection(getDecoderModeIndex(), false)
+        bottomSheetBinding!!.spinnerRecognitionMode.onItemSelectedListener =
+            object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    p0: AdapterView<*>?, p1: View?, p2: Int, p3: Long
+                ) {
+                    decoderMode = when (p2) {
+                        0 -> MyScriptService.DecoderMode.LLM
+                        1 -> MyScriptService.DecoderMode.NGRAM
+                        else -> MyScriptService.DecoderMode.NONE
+                    }
+                    myScriptService?.decoderMode = decoderMode
+                    myScriptService?.llmTimeoutMs = llmTimeoutMs
+                    if (decoderMode == MyScriptService.DecoderMode.LLM) {
+                        myScriptService?.preloadLlm()
+                    }
+                    updateControlsUi()
+                }
+
+                override fun onNothingSelected(p0: AdapterView<*>?) {
+                    /* no op */
+                }
             }
-        }
 
         // When clicked, change the underlying hardware used for inference.
         // Current options are CPU and GPU
@@ -1070,6 +1115,14 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         }
     }
 
+    private fun getDecoderModeIndex(): Int {
+        return when (decoderMode) {
+            MyScriptService.DecoderMode.LLM -> 0
+            MyScriptService.DecoderMode.NGRAM -> 1
+            MyScriptService.DecoderMode.NONE -> 2
+        }
+    }
+
     // Update the values displayed in the bottom sheet. Reset Handlandmarker
     // helper.
     private fun updateControlsUi() {
@@ -1097,8 +1150,21 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             )
             
         bottomSheetBinding!!.ngramWeightValue.text = String.format(Locale.US, "%.1f", ngWeight)
-        bottomSheetBinding!!.ngramDebugSwitch.isChecked = isNgDebugEnabled
-        bottomSheetBinding!!.ngramEnableSwitch.isChecked = isNgramEnabled
+        bottomSheetBinding!!.ngramDebugSwitch.isChecked = isDecoderDebugEnabled
+        bottomSheetBinding!!.spinnerRecognitionMode.setSelection(getDecoderModeIndex(), false)
+
+        val isNgramMode = decoderMode == MyScriptService.DecoderMode.NGRAM
+        bottomSheetBinding!!.ngramWeightRow.visibility = if (isNgramMode) View.VISIBLE else View.GONE
+
+        val isLlmMode = decoderMode == MyScriptService.DecoderMode.LLM
+        bottomSheetBinding!!.llmTimeoutRow.visibility = if (isLlmMode) View.VISIBLE else View.GONE
+        bottomSheetBinding!!.llmTimeoutValue.text = String.format(Locale.US, "%.1f", llmTimeoutMs / 1000f)
+
+        fragmentCameraBinding.btnResetLlmContext.visibility =
+            if (isLlmMode) View.VISIBLE else View.GONE
+
+        fragmentCameraBinding.textLlmStatus.visibility =
+            if (isLlmMode) View.VISIBLE else View.GONE
             
         if(this::handLandmarkerHelper.isInitialized) {
             bottomSheetBinding!!.inferenceTimeVal.text = "0 ms" // Reset or update from helper if possible
@@ -1248,14 +1314,6 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 // Force a redraw
                 fragmentCameraBinding.overlay.invalidate()
                 
-                // Failsafe: if the hand is totally lost by ML, reset language history context
-                val resultForTracking = resultBundle.results.firstOrNull()
-                val isHandPresent = resultForTracking?.landmarks()?.isNotEmpty() == true
-                
-                if (!isHandPresent && wasHandPresent) {
-                    myScriptService?.resetLanguageModelHistory()
-                }
-                wasHandPresent = isHandPresent
             }
         }
     }

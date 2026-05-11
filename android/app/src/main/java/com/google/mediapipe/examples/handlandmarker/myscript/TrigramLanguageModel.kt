@@ -220,7 +220,7 @@ class TrigramLanguageModel(private val context: Context) {
         return DecodeResult(finalSequence.joinToString(" "), debugData.toString())
     }
 
-    private fun getJiixScore(rank: Int): Float {
+    fun getJiixScore(rank: Int): Float {
         return max(0.2f, 1.0f - (rank * 0.2f))
     }
 

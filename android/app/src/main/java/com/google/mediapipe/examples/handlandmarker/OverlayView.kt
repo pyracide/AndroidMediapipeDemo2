@@ -257,7 +257,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
             if (ratio < START_THRESHOLD && !isTapTriggered) {
                 isTapTriggered = true
                 val currentTime = System.currentTimeMillis()
-                if (currentTime - lastTapTime > 500) {
+                if (currentTime - lastTapTime > 400) {
                     tapCount = 1
                 } else {
                     tapCount++
@@ -270,7 +270,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) :
                     strokeListener?.onTriplePinch()
                     tapCount = 0
                 } else {
-                    tapHandler.postDelayed(tapRunnable, 500)
+                    tapHandler.postDelayed(tapRunnable, 400)
                 }
             } else if (ratio > START_THRESHOLD) {
                 isTapTriggered = false
