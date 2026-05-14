@@ -420,6 +420,32 @@
             </LinearLayout>
         </RelativeLayout>
 
+        <!-- LLM Mode Selector row -->
+        <RelativeLayout
+            android:id="@+id/llm_scaling_mode_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/bottom_sheet_default_row_margin">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="LLM Scaling Mode"
+                android:textColor="@color/bottom_sheet_text_color"
+                android:textSize="@dimen/bottom_sheet_text_size" />
+
+            <androidx.appcompat.widget.AppCompatSpinner
+                android:id="@+id/spinner_llm_scaling_mode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_alignParentRight="true"
+                android:entries="@array/llm_scaling_mode_titles"
+                android:minWidth="@dimen/bottom_sheet_spinner_delegate_min_width"
+                android:spinnerMode="dropdown"
+                android:theme="@style/BottomSheetSpinnerItemStyle" />
+
+        </RelativeLayout>
+
         <!-- Debug toggle -->
         <RelativeLayout
             android:layout_width="match_parent"
@@ -498,8 +524,7 @@
         <RelativeLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/bottom_sheet_default_row_margin"
-            android:layout_marginBottom="24dp">
+            android:layout_marginTop="@dimen/bottom_sheet_default_row_margin">
 
             <TextView
                 android:layout_width="wrap_content"
@@ -545,6 +570,33 @@
                     android:textSize="20sp"
                     android:background="?attr/selectableItemBackground" />
             </LinearLayout>
+        </RelativeLayout>
+
+        <!-- Send Mode setting -->
+        <RelativeLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/bottom_sheet_default_row_margin"
+            android:layout_marginBottom="24dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_centerVertical="true"
+                android:text="@string/label_send_mode"
+                android:textColor="@color/bottom_sheet_text_color"
+                android:textSize="@dimen/bottom_sheet_text_size" />
+
+            <Spinner
+                android:id="@+id/spinner_send_mode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_alignParentRight="true"
+                android:layout_centerVertical="true"
+                android:entries="@array/send_mode_titles"
+                android:minWidth="120dp"
+                android:spinnerMode="dropdown"
+                android:theme="@style/BottomSheetSpinnerItemStyle" />
         </RelativeLayout>
 
         <!-- Jitter Buffer toggle -->

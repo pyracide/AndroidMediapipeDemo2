@@ -119,7 +119,8 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private var decoderMode = MyScriptService.DecoderMode.LLM
     private var llmTimeoutMs = 1000L
     private var llmModelIndex = 0
-    private var scraperTargetHeight = 720
+    private var llmScalingMode = 0
+    private var scraperTargetHeight = 480
     
     private val camFpsQueue = java.util.ArrayDeque<Long>()
     private val mpFpsQueue = java.util.ArrayDeque<Long>()
@@ -317,6 +318,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         myScriptService?.setDebugMode(isDecoderDebugEnabled)
         myScriptService?.llmTimeoutMs = llmTimeoutMs
         myScriptService?.setLlmModelIndex(llmModelIndex)
+        myScriptService?.llmScalingMode = llmScalingMode
         myScriptService?.preloadLlm()
         
         fragmentCameraBinding.overlay.strokeListener = object : OverlayView.OnStrokeListener {
@@ -588,6 +590,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
     private fun enableSmartGlasses(url: String, mode: Int) {
         isSmartGlassesMode = true
         currentStreamMode = mode
+        fragmentCameraBinding.overlay.isCenterCrop = (mode == MODE_H264_RTSP)
         
         // 1. Unbind local camera
         cameraProvider?.unbindAll()
@@ -861,6 +864,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         isSmartGlassesMode = false
         // 1. Disconnect
         smartGlassesService?.disconnect()
+        fragmentCameraBinding.overlay.isCenterCrop = false
         
         h264Decoder?.stop()
         h264Decoder = null
@@ -1087,6 +1091,22 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                 }
             }
 
+        bottomSheetBinding!!.spinnerLlmScalingMode.setSelection(llmScalingMode, false)
+        bottomSheetBinding!!.spinnerLlmScalingMode.onItemSelectedListener =
+            object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(
+                    p0: AdapterView<*>?, p1: View?, p2: Int, p3: Long
+                ) {
+                    llmScalingMode = p2
+                    myScriptService?.llmScalingMode = p2
+                    updateControlsUi()
+                }
+
+                override fun onNothingSelected(p0: AdapterView<*>?) {
+                    /* no op */
+                }
+            }
+
         // When clicked, change the underlying hardware used for inference.
         // Current options are CPU and GPU
         bottomSheetBinding!!.spinnerDelegate.setSelection(
@@ -1111,7 +1131,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
             }
             
         // Scraper resolution spinner
-        val resOptions = listOf(360, 420, 540, 720, 1080)
+        val resOptions = listOf(360, 480, 540, 720, 1080)
         val currentResIndex = resOptions.indexOf(scraperTargetHeight).coerceAtLeast(0)
         bottomSheetBinding!!.spinnerScraperRes.setSelection(currentResIndex, false)
         bottomSheetBinding!!.spinnerScraperRes.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -1150,6 +1170,15 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
         bottomSheetBinding!!.btnScaleMinus.setOnClickListener {
             fragmentCameraBinding.overlay.coordinateScale = (fragmentCameraBinding.overlay.coordinateScale - 0.25f).coerceAtLeast(0.25f)
             bottomSheetBinding!!.textScaleValue.text = String.format(java.util.Locale.US, "%.2f", fragmentCameraBinding.overlay.coordinateScale)
+        }
+        
+        // Send Mode Spinner
+        bottomSheetBinding!!.spinnerSendMode.setSelection(fragmentCameraBinding.overlay.sendMode, false)
+        bottomSheetBinding!!.spinnerSendMode.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                fragmentCameraBinding.overlay.sendMode = position
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
     }
 
@@ -1332,14 +1361,38 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener, Text
                         String.format("%d ms", resultBundle.inferenceTime)
                 }
 
+                val handLandmarkerResult = resultBundle.results.first()
+                if (handLandmarkerResult.landmarks().isNotEmpty()) {
+                    val handLandmarks = handLandmarkerResult.landmarks().first()
+                    var minX = 1f
+                    var maxX = 0f
+                    handLandmarks.forEach { landmark ->
+                        if (landmark.x() < minX) minX = landmark.x()
+                        if (landmark.x() > maxX) maxX = landmark.x()
+                    }
+                    val handWidth = maxX - minX
+                    
+                    // Retrigger threshold: if hand is smaller than 15% of the screen width
+                    if (handWidth < 0.15f) {
+                        Log.d(TAG, "Hand too small ($handWidth). Retriggering detection...")
+                        backgroundExecutor.execute {
+                            handLandmarkerHelper.clearHandLandmarker()
+                            handLandmarkerHelper.setupHandLandmarker()
+                        }
+                        fragmentCameraBinding.overlay.clearTracking()
+                        return@runOnUiThread
+                    }
+                }
+
                 // Pass necessary information to OverlayView for drawing on the canvas
                 fragmentCameraBinding.overlay.setResults(
-                    resultBundle.results.first(),
+                    handLandmarkerResult,
                     resultBundle.inputImageHeight,
                     resultBundle.inputImageWidth,
                     RunningMode.LIVE_STREAM
                 )
                 
+                // --- END ONRESULTS ---
                 // Show confidence score
                 if (resultBundle.results.isNotEmpty()) {
                     val result = resultBundle.results.first()

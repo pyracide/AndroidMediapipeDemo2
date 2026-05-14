@@ -125,6 +125,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     }
     
     var decoderMode = DecoderMode.LLM
+    var llmScalingMode = 0 // 0=Basic, 1=Softmax, 2=Off
     var oneWordOnly = true
     private var isDebugEnabled = false
     var llmTimeoutMs: Long = 1000L
@@ -335,17 +336,19 @@ class MyScriptService(private val context: Context, private val listener: Recogn
     }
 
     fun commitAndClear() {
-        scope.launch(Dispatchers.Default) {
-            try {
-                // Safety check
-                if (offscreenEditor?.part == null) {
-                    Log.e("Editor Logging", "Commit ignored: Editor has no part.")
-                    return@launch
-                }
+        scope.launch(Dispatchers.Main) {
+            // By launching on Main first, we queue this AFTER any pending addStroke events!
+            withContext(Dispatchers.Default) {
+                try {
+                    // Safety check
+                    if (offscreenEditor?.part == null) {
+                        Log.e("Editor Logging", "Commit ignored: Editor has no part.")
+                        return@withContext
+                    }
 
-                if (enableEditorLogging) Log.d("Editor Logging", "Commit triggered. Waiting for idle...")
-                offscreenEditor?.waitForIdle()
-                if (enableEditorLogging) Log.d("Editor Logging", "Engine idle. Exporting...")
+                    if (enableEditorLogging) Log.d("Editor Logging", "Commit triggered. Waiting for idle...")
+                    offscreenEditor?.waitForIdle()
+                    if (enableEditorLogging) Log.d("Editor Logging", "Engine idle. Exporting...")
 
                 // 1. Export JIIX
                 val jiixString = offscreenEditor?.export_(emptyArray(), MimeType.JIIX)
@@ -483,7 +486,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                     // --- TUNABLE SCALING SYSTEM ---
                                     // You can tune these values below:
                                     val enableLlmScaling = true
-                                    val diffUpperThreshold = 3.0f // Above this diff, apply full LLM weight
+                                    val diffUpperThreshold = 4.0f // Above this diff, apply full LLM weight
                                     val diffLowerThreshold = 1.0f // Below this diff, apply minimum LLM scaling
                                     val scaleMax = 1.0f           // Maximum multiplier for LLM weight
                                     val scaleMin = 0.33f          // Minimum multiplier for LLM weight
@@ -511,6 +514,18 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                     }
                                     // ------------------------------
 
+                                    val smScores = mutableListOf<Float>()
+                                    if (llmScalingMode == 1 && llmScores.isNotEmpty()) {
+                                        val maxLogit = llmScores.maxOrNull() ?: 0f
+                                        var sumExp = 0f
+                                        llmScores.forEach { logit ->
+                                            sumExp += kotlin.math.exp(logit - maxLogit)
+                                        }
+                                        llmScores.forEach { logit ->
+                                            smScores.add(kotlin.math.exp(logit - maxLogit) / sumExp)
+                                        }
+                                    }
+
                                     var bestIndex = -1
                                     var bestScore = -1e9f
 
@@ -518,9 +533,14 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                     if (isDebugEnabled) {
                                         val rawContextLine = if (rawPrompt.isBlank()) "<empty>" else rawPrompt
                                         val contextLine = if (prompt.isBlank()) "<empty>" else prompt
+                                        val modeLabel = when(llmScalingMode) {
+                                            0 -> "Basic"
+                                            1 -> "Softmax"
+                                            else -> "Off"
+                                        }
                                         debugBuilder.append("**Context (raw):** ${rawContextLine}\n")
                                         debugBuilder.append("**Context (normalized):** ${contextLine}\n")
-                                        debugBuilder.append("**Mode:** LLM\n")
+                                        debugBuilder.append("**Mode:** LLM (${modeLabel})\n")
                                         debugBuilder.append("**Inference:** ${inferenceMs} ms\n")
                                         debugBuilder.append("**LLM Scale:** ${String.format("%.2f", llmScale)}x (Spread: ${String.format("%.2f", diff)})\n")
                                         debugBuilder.append("**JIIX candidates:** ${candidateList.take(5).joinToString(", ")}\n")
@@ -534,6 +554,13 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                             "${cand}=${String.format("%.4f", raw)}"
                                         }
                                         debugBuilder.append("**LLM raw logits:** ${rawPairs.joinToString(", ")}\n")
+                                        if (llmScalingMode == 1) {
+                                            val smPairs = llmCandidates.mapIndexed { index, cand ->
+                                                val sm = smScores.getOrElse(index) { 0f }
+                                                "${cand}=${String.format("%.4f", sm)}"
+                                            }
+                                            debugBuilder.append("**LLM Softmax:** ${smPairs.joinToString(", ")}\n")
+                                        }
                                     }
 
                                     llmCandidates.forEachIndexed { index, cand ->
@@ -546,7 +573,13 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                         val llmRank = llmRanks.getOrElse(index) { llmScores.size }
                                         val llmWeight = llmWeights.getOrElse(llmRank) { 0f }
                                         val adjustedLlmWeight = llmWeight * llmScale
-                                        val total = jiixScore + adjustedLlmWeight
+                                        val smScore = smScores.getOrElse(index) { 0f }
+                                        
+                                        val total = when (llmScalingMode) {
+                                            0 -> jiixScore + adjustedLlmWeight // Basic
+                                            1 -> jiixScore * (1.0f + smScore)  // Softmax
+                                            else -> jiixScore                  // Off
+                                        }
                                         
                                         if (total > bestScore) {
                                             bestScore = total
@@ -557,18 +590,23 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                                             val llmScore = llmScores.getOrElse(index) { -1e9f }
                                             val tok = llmTokenCounts.getOrElse(index) { 0 }
                                             val tokLabel = if (tok > 0) " (${tok} tok)" else ""
+                                            val totStr = if (llmScalingMode == 1) {
+                                                String.format("%.2f*(1+%.2f)=%.2f", jiixScore, smScore, total)
+                                            } else if (llmScalingMode == 0) {
+                                                String.format("%.2f+%.2f=%.2f", jiixScore, adjustedLlmWeight, total)
+                                            } else {
+                                                String.format("%.2f", total)
+                                            }
                                             debugBuilder.append(
                                                 String.format(
-                                                    "%s%s (JIIX R%d=%.2f | LLM R%d=%.4f | W=%.2f*%.2f | Tot=%.2f)\n",
+                                                    "%s%s (JIIX R%d=%.2f | LLM R%d=%.4f | Tot=%s)\n",
                                                     cand,
                                                     tokLabel,
                                                     index + 1,
                                                     jiixScore,
                                                     llmRank + 1,
                                                     llmScore,
-                                                    llmWeight,
-                                                    llmScale,
-                                                    total
+                                                    totStr
                                                 )
                                             )
                                         }
@@ -632,6 +670,7 @@ class MyScriptService(private val context: Context, private val listener: Recogn
                 }
             } catch (e: Exception) {
                 Log.e("Editor Logging", "Commit failed", e)
+            }
             }
         }
     }

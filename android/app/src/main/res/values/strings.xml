@@ -58,6 +58,12 @@
         <item>SmolLM2 360M Q8</item>
     </string-array>
 
+    <string-array name="llm_scaling_mode_titles">
+        <item>Basic</item>
+        <item>Softmax</item>
+        <item>Off</item>
+    </string-array>
+
     <string-array name="delegate_spinner_titles">
         <item>CPU</item>
         <item>GPU</item>
@@ -66,7 +72,7 @@
     <string name="label_scraper_res">Scraper Resolution</string>
     <string-array name="scraper_res_titles">
         <item>360p</item>
-        <item>420p</item>
+        <item>480p</item>
         <item>540p</item>
         <item>720p</item>
         <item>1080p</item>
@@ -75,4 +81,9 @@
     <string name="label_jitter_buffer">Smooth Motion (Jitter Buffer)</string>
     <string name="label_tap_gestures">Tap Gestures</string>
     <string name="label_coord_scale">Coordinate Scale</string>
+    <string name="label_send_mode">Send Mode</string>
+    <string-array name="send_mode_titles">
+        <item>Third Person (Classic)</item>
+        <item>First Person (Straight Fingers)</item>
+    </string-array>
 </resources>
